@@ -228,7 +228,7 @@ wss.on('connection', async (ws, req) => {
     b44Create('Lead', {
       nom: lead.nom||'Inconnu', telephone: tel,
       besoin: lead.besoin||'Appel entrant', agent_nom: ag, statut: 'Nouveau',
-      notes: `CallSid:${callSid}|Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}`
+      notes: `CallSid:${callSid}|Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}|client_id:${cfg.client_id||'?'}|Discussion:${tx}`
     });
     console.log('[LEAD] ✅', lead.nom||'Inconnu', tel, '→', ag);
     gmailSend(cfg.destinataires_email,
