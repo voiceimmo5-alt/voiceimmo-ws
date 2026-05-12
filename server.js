@@ -262,7 +262,17 @@ wss.on('connection', async (ws, req) => {
         const m = JSON.parse(data);
         if ((m.type==='session.created'||m.type==='session.updated') && !ready) {
           ready = true;
-          console.log('[OAI] Session prête → déclenchement réponse initiale');
+          const accueil = (cfg.message_accueil||'').trim() || `${cfg.nom_agence}, bonjour !`;
+          console.log(`[OAI] Session prête → accueil forcé: "${accueil}"`);
+          // Injecter le message d'accueil exact comme premier tour assistant
+          oai.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'input_text', text: accueil }]
+            }
+          }));
           oai.send(JSON.stringify({ type:'response.create' }));
           for(const c of queue) oai.send(JSON.stringify({ type:'input_audio_buffer.append', audio:c }));
           queue.length = 0;
