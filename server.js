@@ -57,12 +57,31 @@ async function b44List(entity) {
 
 async function b44Create(entity, data) {
   try {
-    await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
+    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
       method: 'POST',
       headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-  } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
+    const txt = await r.text();
+    if (!r.ok) {
+      console.error(`[B44] create ${entity} ERREUR ${r.status}:`, txt);
+    } else {
+      console.log(`[B44] ✅ ${entity} créé — status ${r.status}`);
+    }
+    return r.ok ? JSON.parse(txt) : null;
+  } catch(e) { console.error(`[B44] create ${entity} EXCEPTION:`, e.message); return null; }
+}
+
+async function b44Update(entity, id, data) {
+  try {
+    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/${id}/`, {
+      method: 'PUT',
+      headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!r.ok) console.error(`[B44] update ${entity}/${id} ERREUR ${r.status}`);
+    else console.log(`[B44] ✅ ${entity}/${id} mis à jour`);
+  } catch(e) { console.error(`[B44] update ${entity}:`, e.message); }
 }
 
 async function gmailSend(toAddr, subject, body) {
@@ -158,7 +177,16 @@ async function getClientConfig(numeroTwilio) {
       if (agCfg?.annonces_cache) cfg.annonces_cache = agCfg.annonces_cache;
     } catch(_) {}
 
-    console.log(`[CFG] accueil="${cfg.message_accueil}" voix=${cfg.voix}`);
+    // Stocker l'id DB du client pour les mises à jour de compteurs
+    cfg.clientDbId           = client.id || null;
+    cfg.appels_total         = client.appels_total  || 0;
+    cfg.appels_mois          = client.appels_mois   || 0;
+    cfg.appels_pack          = client.appels_pack   || 200;
+    cfg.appels_seuil_alerte  = client.appels_seuil_alerte || 20;
+    cfg.alerte_envoyee       = client.alerte_envoyee || false;
+    cfg.alerte_email         = client.alerte_email  || '';
+    cfg.plan                 = client.plan          || 'Starter';
+    console.log(`[CFG] accueil="${cfg.message_accueil}" voix=${cfg.voix} pack=${cfg.appels_pack} mois=${cfg.appels_mois}`);
     return cfg;
   } catch(e) { console.error('[CFG] Erreur:', e.message); return DEF; }
 }
@@ -225,12 +253,69 @@ wss.on('connection', async (ws, req) => {
     const ag  = lead.agent || 'Luca CIMMARUSTI';
     const now = new Date().toLocaleString('fr-FR',{timeZone:'Europe/Paris'});
     const tel = lead.tel || callerRaw;
+    // Créer le lead en base
     b44Create('Lead', {
       nom: lead.nom||'Inconnu', telephone: tel,
       besoin: lead.besoin||'Appel entrant', agent_nom: ag, statut: 'Nouveau',
       notes: `CallSid:${callSid}|Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}|client_id:${cfg.client_id||'?'}|Discussion:${tx}`
     });
     console.log('[LEAD] ✅', lead.nom||'Inconnu', tel, '→', ag);
+
+    // Incrémenter les compteurs d'appels du client
+    if (cfg.clientDbId) {
+      const newTotal = (cfg.appels_total||0) + 1;
+      const newMois  = (cfg.appels_mois||0) + 1;
+      const pack     = cfg.appels_pack || 200;
+      const seuil    = cfg.appels_seuil_alerte || 20;
+      const restants = pack - newMois;
+      await b44Update('Client', cfg.clientDbId, {
+        appels_total: newTotal,
+        appels_mois:  newMois,
+        alerte_envoyee: restants <= 0 ? true : cfg.alerte_envoyee
+      });
+      console.log(`[COMPTEUR] total=${newTotal} mois=${newMois} restants=${restants}`);
+
+      // Alerte seuil si restants <= seuil et pas encore envoyée
+      if (!cfg.alerte_envoyee && restants <= seuil && restants > 0 && cfg.alerte_email) {
+        const alertDest = cfg.alerte_email || cfg.destinataires_email;
+        gmailSend(alertDest,
+          `⚠️ Alerte Voxzen — Il vous reste ${restants} appels`,
+          `⚠️ ALERTE CRÉDIT APPELS — ${cfg.nom_agence}
+
+Il vous reste seulement ${restants} appels dans votre pack ${cfg.plan||'Starter'}.
+
+Appels utilisés ce mois : ${newMois} / ${pack}
+
+Pour éviter toute interruption de service, pensez à contacter Voxzen pour upgrader votre plan.
+
+📧 contact@voxzen.io
+🌐 voxzen.io
+
+— L'équipe Voxzen`
+        );
+        await b44Update('Client', cfg.clientDbId, { alerte_envoyee: true });
+        console.log(`[ALERTE] ✅ Seuil atteint (${restants} restants) → email envoyé à ${alertDest}`);
+      }
+      // Alerte pack épuisé
+      if (restants <= 0 && !cfg.alerte_envoyee) {
+        const alertDest = cfg.alerte_email || cfg.destinataires_email;
+        gmailSend(alertDest,
+          `🚨 Pack épuisé — Voxzen VoiceImmo`,
+          `🚨 PACK D'APPELS ÉPUISÉ — ${cfg.nom_agence}
+
+Vous avez consommé tous vos ${pack} appels inclus dans votre pack ${cfg.plan||'Starter'}.
+
+Les appels supplémentaires sont facturés 0,30€/appel.
+
+Contactez-nous pour upgrader votre plan et bénéficier d'un tarif plus avantageux.
+
+📧 contact@voxzen.io
+
+— L'équipe Voxzen`
+        );
+        console.log(`[ALERTE] 🚨 Pack épuisé → email envoyé`);
+      }
+    }
     gmailSend(cfg.destinataires_email,
       `🏠 Lead → ${ag} | ${tel} | ${lead.besoin||'?'} | ${lead.ville||'?'}`,
       `🏠 NOUVEAU LEAD — ${cfg.nom_agence}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\nNom       : ${lead.nom||'Inconnu'}\nTéléphone : ${tel}\nBesoin    : ${lead.besoin||'?'}\nVille     : ${lead.ville||'Non précisé'}\nPrix      : ${lead.prix||'Non précisé'}\nRéférence : ${lead.ref||'Non précisé'}\nAgent     : ${ag}\nDate      : ${now}\nCallSid   : ${callSid}\n\n━━ CONVERSATION ━━\n${tx}`
