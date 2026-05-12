@@ -306,9 +306,24 @@ wss.on('connection', async (ws, req) => {
             const am = allIA.match(/\b(luca|jeff|kenny)\b/i);
             if (am) lead.agent = am[1].toLowerCase()==='luca'?'Luca CIMMARUSTI':am[1].toLowerCase()==='jeff'?'Jeff PIGEAT':'Kenny PIGEAT';
           }
-          if (!saved && (lastIA.includes('très bientôt')||lastIA.includes('au revoir')) && (lead.tel||callerRaw)) flush();
-          if (!saved && transcript.length >= 12 && (lead.tel||callerRaw)) flush();
+          const isEnd = lastIA.includes('très bientôt') || lastIA.includes('au revoir') || lastIA.includes('bonne journée');
+          if (isEnd && (lead.tel||callerRaw)) {
+            flush();
+            // Attendre que l'audio soit joué puis raccrocher
+            setTimeout(() => {
+              try {
+                if (ws.readyState === WebSocket.OPEN) {
+                  // Envoyer un mark pour savoir quand l'audio est terminé
+                  ws.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'end_of_call' } }));
+                  console.log('[WS] Signal raccrochage envoyé');
+                }
+              } catch(e) { console.error('[WS hangup]', e.message); }
+            }, 3500);
+          }
+          if (!saved && transcript.length >= 14 && (lead.tel||callerRaw)) flush();
         }
+        // Quand Twilio confirme la fin de l'audio → raccrocher
+        if (m.type==='response.done') { /* handled above */ }
       } catch(e) { console.error('[OAI parse]',e.message); }
     });
 
@@ -350,6 +365,17 @@ wss.on('connection', async (ws, req) => {
         if (oai && oai.readyState===WebSocket.OPEN && ready)
           oai.send(JSON.stringify({ type:'input_audio_buffer.append', audio:b64 }));
         else if (oai) queue.push(b64);
+      }
+
+      else if (m.event==='mark') {
+        const markName = m.mark?.name || '';
+        console.log(`[WS] Mark reçu: ${markName}`);
+        if (markName === 'end_of_call') {
+          console.log('[WS] Audio terminé → raccrochage');
+          flush();
+          if (oai) try{oai.close();}catch(_){}
+          ws.close();
+        }
       }
 
       else if (m.event==='stop') {
