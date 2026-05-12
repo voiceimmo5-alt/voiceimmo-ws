@@ -1,8 +1,6 @@
 /**
- * VoiceImmo WebSocket Server — Railway v2
- * - GET / → health check
- * - POST /twiml → retourne le TwiML pour Twilio
- * - WSS / → Media Stream handler
+ * VoiceImmo WebSocket Server — Railway v3
+ * Fix: paramètres via <Parameter> Twilio + gestion robuste WS
  */
 
 const express = require('express');
@@ -21,24 +19,27 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v2-railway', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v3-railway', service: 'VoiceImmo WS' }));
 
-// ─── TwiML endpoint (appelé par Twilio) ──────────────────────────────────────
+// ─── TwiML endpoint ───────────────────────────────────────────────────────────
 app.post('/twiml', (req, res) => {
-  const caller = req.body.From || req.body.Caller || '';
-  const to     = req.body.To   || req.body.Called  || '';
+  const caller = req.body.From    || req.body.Caller || '';
+  const to     = req.body.To      || req.body.Called || '';
   const sid    = req.body.CallSid || '';
-  const host   = req.headers.host || 'voiceimmo-ws-production.up.railway.app';
 
-  console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
+  console.log(`[TWIML v3] From:${caller} To:${to} Sid:${sid}`);
 
-  const wsUrl = `wss://${host}?caller=${encodeURIComponent(caller)}&to=${encodeURIComponent(to)}&sid=${encodeURIComponent(sid)}`;
+  const wsUrl = `wss://voiceimmo-ws-production.up.railway.app`;
 
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}" />
+    <Stream url="${wsUrl}">
+      <Parameter name="caller" value="${caller}" />
+      <Parameter name="to" value="${to}" />
+      <Parameter name="sid" value="${sid}" />
+    </Stream>
   </Connect>
 </Response>`);
 });
@@ -64,17 +65,16 @@ async function b44Create(entity, data) {
   } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
 }
 
-async function gmailSend(to, subject, body) {
+async function gmailSend(toAddr, subject, body) {
   try {
     const tr = await fetch(`https://api.base44.com/api/apps/${APP_ID}/connectors/gmail/token`, {
       headers: { 'x-api-key': BASE44_API_KEY }
     });
     const { access_token } = await tr.json();
-
     const msg = [
       `From: Voxzen VoiceImmo <contact@voxzen.io>`,
       `Cc: voiceimmo5@gmail.com`,
-      `To: ${to}`,
+      `To: ${toAddr}`,
       `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
       `MIME-Version: 1.0`,
       `Content-Type: text/plain; charset=UTF-8`,
@@ -82,9 +82,7 @@ async function gmailSend(to, subject, body) {
       ``,
       Buffer.from(body).toString('base64'),
     ].join('\r\n');
-
     const raw = Buffer.from(msg).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-
     const gr = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
       headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
@@ -112,11 +110,16 @@ async function getClientConfig(numeroTwilio) {
 
   try {
     const normNum = numeroTwilio.replace(/\s/g, '');
+    console.log(`[CFG] Recherche client pour: "${normNum}"`);
     const clients = await b44List('Client');
-    const client  = clients.find(c => c.numero_actuel && c.numero_actuel.replace(/\s/g,'') === normNum);
+    console.log(`[CFG] ${clients.length} clients en base`);
+    const client = clients.find(c => c.numero_actuel && c.numero_actuel.replace(/\s/g,'') === normNum);
 
-    if (!client) { console.log(`[CFG] ⚠️ Pas de client pour ${normNum}`); return DEF; }
-    console.log(`[CFG] ✅ ${client.nom_entreprise} (${client.client_id})`);
+    if (!client) {
+      console.log(`[CFG] ⚠️ Pas de client pour ${normNum} — utilisation config par défaut`);
+      return DEF;
+    }
+    console.log(`[CFG] ✅ Match: ${client.nom_entreprise} (${client.client_id})`);
 
     let agentsStr = DEF.agents;
     if (client.agents) {
@@ -127,7 +130,9 @@ async function getClientConfig(numeroTwilio) {
       } catch { agentsStr = String(client.agents)||DEF.agents; }
     }
 
-    const VMAP = { Sophie:'shimmer',Claire:'nova',Isabelle:'alloy',Emma:'echo',Thomas:'fable',Nicolas:'onyx',shimmer:'shimmer',nova:'nova',alloy:'alloy',echo:'echo',fable:'fable',onyx:'onyx' };
+    const VMAP = { Sophie:'shimmer',Claire:'nova',Isabelle:'alloy',Emma:'echo',Thomas:'fable',Nicolas:'onyx',
+                   shimmer:'shimmer',nova:'nova',alloy:'alloy',echo:'echo',fable:'fable',onyx:'onyx' };
+
     const cfg = {
       ...DEF,
       nom_agence:          client.nom_entreprise || DEF.nom_agence,
@@ -143,48 +148,49 @@ async function getClientConfig(numeroTwilio) {
     };
 
     // Annonces depuis AgenceConfig
-    const acList = await b44List('AgenceConfig');
-    const agCfg  = acList.find(a => a.numero_twilio?.replace(/\s/g,'') === normNum) || acList[0];
-    if (agCfg?.annonces_cache) cfg.annonces_cache = agCfg.annonces_cache;
+    try {
+      const acList = await b44List('AgenceConfig');
+      const agCfg  = acList.find(a => a.numero_twilio?.replace(/\s/g,'') === normNum) || acList[0];
+      if (agCfg?.annonces_cache) cfg.annonces_cache = agCfg.annonces_cache;
+    } catch(_) {}
 
     console.log(`[CFG] accueil="${cfg.message_accueil}" voix=${cfg.voix}`);
     return cfg;
-  } catch(e) { console.error('[CFG]', e.message); return DEF; }
+  } catch(e) { console.error('[CFG] Erreur:', e.message); return DEF; }
 }
 
 function buildPrompt(cfg, callerNum) {
   const accueil  = (cfg.message_accueil||'').trim() || `${cfg.nom_agence}, bonjour !`;
   const annonces = cfg.annonces_cache ? `\nBIENS DISPONIBLES :\n${cfg.annonces_cache}` : '\n(Aucune annonce disponible pour l\'instant)';
-  const scenario = cfg.scraping_format?.trim() ? `\n━━ INSTRUCTIONS CLIENT (PRIORITAIRES) ━━\n${cfg.scraping_format.trim()}\n━━━━━━━━━━━━━━━━━━━━━━━━` : '';
+  const scenario = cfg.scraping_format?.trim()
+    ? `\n━━ INSTRUCTIONS PRIORITAIRES ━━\n${cfg.scraping_format.trim()}\n━━━━━━━━━━━━━━━━━━━━━━━━` : '';
 
-  return `Tu es l'assistante téléphonique de ${cfg.nom_agence}. Tu parles uniquement français. Tu es chaleureuse, concise et naturelle.
+  return `Tu es l'assistante téléphonique de ${cfg.nom_agence}. Tu parles UNIQUEMENT en français. Tu es chaleureuse, concise et naturelle.
 
 ━━ ACCUEIL OBLIGATOIRE ━━
 Ta toute première phrase doit être EXACTEMENT : "${accueil}"
-Rien d'autre avant. Pas de prénom. Pas de présentation.
+Rien d'autre avant. Pas de prénom. Pas de "je suis". Commence DIRECTEMENT par cette phrase.
 
-━━ FLUX DE L'APPEL ━━
-Pose UNE seule question à la fois, dans cet ordre :
-ÉTAPE 1 — BESOIN : "Vous recherchez plutôt un achat ou une vente ?"
-ÉTAPE 2 — VILLE : "Dans quelle ville ou quel secteur ?"
-ÉTAPE 3 — BUDGET : "Quel est votre budget ?" (si pas déjà mentionné)
-ÉTAPE 4 — NOM : "Votre prénom et nom ?"
-ÉTAPE 5 — CONFIRMATION NUMÉRO : "Je vois que vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
-ÉTAPE 6 — CLÔTURE : "Merci pour votre appel, à très bientôt !" puis raccrocher.
-
-━━ RÈGLES ━━
-- JAMAIS enchaîner deux étapes dans la même réponse
-- JAMAIS raccrocher avant d'avoir le nom ET la confirmation du numéro
-- Réponses courtes, max 2 phrases par tour
-- Toujours attendre la réponse avant de passer à l'étape suivante
+━━ FLUX DE L'APPEL (une question à la fois) ━━
+1. Besoin : achat / vente / renseignement ?
+2. Ville ou secteur ?
+3. Budget envisagé ?
+4. Prénom et nom ?
+5. Confirmation numéro : "Vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
+6. Clôture : "Merci pour votre appel, à très bientôt !" puis raccrocher immédiatement.
 ${scenario}
 
 Agents par secteur :
 ${cfg.agents}
 
 Horaires : ${cfg.horaires}
-Numéro appelant détecté : ${callerNum || 'non détecté'}
-${annonces}`;
+${annonces}
+
+RÈGLES ABSOLUES :
+- Réponds TOUJOURS en français, jamais en anglais
+- Une seule question par réponse
+- Max 2 phrases par tour
+- Commence par "${accueil}" sans exception`;
 }
 
 // ─── µ-law codec ─────────────────────────────────────────────────────────────
@@ -198,56 +204,61 @@ const pb2u = p=>{ const o=new Uint8Array(p.length); for(let i=0;i<p.length;i++) 
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 wss.on('connection', async (ws, req) => {
-  const uparams   = new URL(req.url, `http://${req.headers.host}`).searchParams;
-  const callerRaw = uparams.get('caller') || '';
-  const toRaw     = uparams.get('to')     || '';
-  const callSid   = uparams.get('sid')    || 'unknown';
+  console.log(`[WS] Nouvelle connexion depuis ${req.socket.remoteAddress}`);
 
-  console.log(`[WS] ✅ caller:"${callerRaw}" to:"${toRaw}" sid:${callSid}`);
-
-  const cfg       = await getClientConfig(toRaw || undefined);
-  const callerNum = callerRaw.replace(/\s/g,'').replace(/^\+33/,'0').replace(/(\d{2})(?=\d)/g,'$1 ').trim();
-  const voice     = cfg.voix || 'shimmer';
-
-  let oai = null, streamSid = '', ready = false;
+  let callerRaw = '', toRaw = '', callSid = 'unknown';
+  let streamSid = '', ready = false;
+  let oai = null;
   const queue = [], transcript = [];
   let curAss = '';
-  let lead   = { nom:'', tel:callerNum, besoin:'', agent:'', ville:'', prix:'', ref:'' };
+  let lead   = { nom:'', tel:'', besoin:'', agent:'', ville:'', prix:'', ref:'' };
   let saved  = false;
+  let cfg    = null;
 
   function flush() {
-    if (saved) return; saved = true;
+    if (saved || !cfg) return; saved = true;
     const tx  = transcript.map(m=>`${m.r==='a'?'IA':'Client'}: ${m.t}`).join('\n');
     const ag  = lead.agent || 'Luca CIMMARUSTI';
     const now = new Date().toLocaleString('fr-FR',{timeZone:'Europe/Paris'});
-    b44Create('Lead', { nom:lead.nom||'Inconnu', telephone:lead.tel||callerNum, besoin:lead.besoin||'Appel entrant', agent_nom:ag, statut:'Nouveau', notes:`CallSid:${callSid}|Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}` });
-    console.log('[LEAD] ✅', lead.nom||'Inconnu', lead.tel||callerNum, '→', ag);
+    const tel = lead.tel || callerRaw;
+    b44Create('Lead', {
+      nom: lead.nom||'Inconnu', telephone: tel,
+      besoin: lead.besoin||'Appel entrant', agent_nom: ag, statut: 'Nouveau',
+      notes: `CallSid:${callSid}|Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}`
+    });
+    console.log('[LEAD] ✅', lead.nom||'Inconnu', tel, '→', ag);
     gmailSend(cfg.destinataires_email,
-      `🏠 Lead → ${ag} | ${lead.tel||callerNum} | ${lead.besoin||'?'} | ${lead.ville||'?'}`,
-      `🏠 NOUVEAU LEAD — ${cfg.nom_agence}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\nNom       : ${lead.nom||'Inconnu'}\nTéléphone : ${lead.tel||callerNum}\nBesoin    : ${lead.besoin||'?'}\nVille     : ${lead.ville||'Non précisé'}\nPrix      : ${lead.prix||'Non précisé'}\nRéférence : ${lead.ref||'Non précisé'}\nAgent     : ${ag}\nDate      : ${now}\nCallSid   : ${callSid}\n\n━━ CONVERSATION ━━\n${tx}`
+      `🏠 Lead → ${ag} | ${tel} | ${lead.besoin||'?'} | ${lead.ville||'?'}`,
+      `🏠 NOUVEAU LEAD — ${cfg.nom_agence}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\nNom       : ${lead.nom||'Inconnu'}\nTéléphone : ${tel}\nBesoin    : ${lead.besoin||'?'}\nVille     : ${lead.ville||'Non précisé'}\nPrix      : ${lead.prix||'Non précisé'}\nRéférence : ${lead.ref||'Non précisé'}\nAgent     : ${ag}\nDate      : ${now}\nCallSid   : ${callSid}\n\n━━ CONVERSATION ━━\n${tx}`
     );
   }
 
-  function connectOAI() {
+  function connectOAI(callerNum) {
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
       ['realtime', `openai-insecure-api-key.${OPENAI_API_KEY}`, 'openai-beta.realtime-v1']
     );
     oai.on('open', () => {
-      console.log(`[OAI] connecté voice:${voice}`);
+      console.log(`[OAI] ✅ Connecté — voice:${cfg.voix}`);
       oai.send(JSON.stringify({ type:'session.update', session:{
-        modalities:['text','audio'], instructions:buildPrompt(cfg,callerNum), voice,
-        input_audio_format:'pcm16', output_audio_format:'pcm16',
+        modalities:['text','audio'],
+        instructions: buildPrompt(cfg, callerNum),
+        voice: cfg.voix || 'shimmer',
+        input_audio_format:'pcm16',
+        output_audio_format:'pcm16',
         input_audio_transcription:{ model:'whisper-1' },
         turn_detection:{ type:'server_vad', threshold:0.5, prefix_padding_ms:300, silence_duration_ms:700 },
-        temperature:0.6, max_response_output_tokens:150,
+        temperature:0.6,
+        max_response_output_tokens:150,
       }}));
     });
+
     oai.on('message', data => {
       try {
         const m = JSON.parse(data);
         if ((m.type==='session.created'||m.type==='session.updated') && !ready) {
           ready = true;
+          console.log('[OAI] Session prête → déclenchement réponse initiale');
           oai.send(JSON.stringify({ type:'response.create' }));
           for(const c of queue) oai.send(JSON.stringify({ type:'input_audio_buffer.append', audio:c }));
           queue.length = 0;
@@ -262,7 +273,7 @@ wss.on('connection', async (ws, req) => {
         if (m.type==='response.audio_transcript.delta' && m.delta) curAss += m.delta;
         if (m.type==='response.audio_transcript.done' && curAss) {
           transcript.push({r:'a',t:curAss});
-          console.log(`[IA] "${curAss.slice(0,100)}"`);
+          console.log(`[IA] "${curAss.slice(0,120)}"`);
           curAss = '';
         }
         if (m.type==='conversation.item.input_audio_transcription.completed' && m.transcript) {
@@ -295,42 +306,63 @@ wss.on('connection', async (ws, req) => {
             const am = allIA.match(/\b(luca|jeff|kenny)\b/i);
             if (am) lead.agent = am[1].toLowerCase()==='luca'?'Luca CIMMARUSTI':am[1].toLowerCase()==='jeff'?'Jeff PIGEAT':'Kenny PIGEAT';
           }
-          if (!saved && (lastIA.includes('très bientôt')||lastIA.includes('au revoir')) && lead.tel) flush();
-          if (!saved && transcript.length >= 10 && lead.tel) flush();
+          if (!saved && (lastIA.includes('très bientôt')||lastIA.includes('au revoir')) && (lead.tel||callerRaw)) flush();
+          if (!saved && transcript.length >= 12 && (lead.tel||callerRaw)) flush();
         }
-      } catch(e) { console.error('[OAI]',e.message); }
+      } catch(e) { console.error('[OAI parse]',e.message); }
     });
+
     oai.on('error', e => console.error('[OAI err]',e.message));
     oai.on('close', code => console.log('[OAI closed]',code));
   }
 
-  connectOAI();
-
-  ws.on('message', data => {
+  ws.on('message', async data => {
     try {
       const m = JSON.parse(data);
+
+      if (m.event==='connected') {
+        console.log('[WS] Event: connected');
+      }
+
       if (m.event==='start') {
-        streamSid = m.start?.streamSid || '';
-        console.log('[WS] streamSid:', streamSid);
-      } else if (m.event==='media' && m.media?.payload) {
+        streamSid  = m.start?.streamSid || '';
+        // Récupérer les paramètres depuis customParameters
+        const params = m.start?.customParameters || {};
+        callerRaw  = params.caller || callerRaw || '';
+        toRaw      = params.to     || toRaw     || '';
+        callSid    = params.sid    || m.start?.callSid || callSid;
+
+        console.log(`[WS] START streamSid:${streamSid} caller:"${callerRaw}" to:"${toRaw}" sid:${callSid}`);
+
+        lead.tel = callerRaw.replace(/\s/g,'').replace(/^\+33/,'0').replace(/(\d{2})(?=\d)/g,'$1 ').trim();
+
+        // Charger config client puis connecter OpenAI
+        cfg = await getClientConfig(toRaw || undefined);
+        const callerNum = lead.tel;
+        connectOAI(callerNum);
+      }
+
+      else if (m.event==='media' && m.media?.payload) {
         const ulaw = Buffer.from(m.media.payload,'base64');
         const pcm  = u2p(new Uint8Array(ulaw));
         const up   = r8_24(pcm);
         const b64  = Buffer.from(new Int16Array(up).buffer).toString('base64');
         if (oai && oai.readyState===WebSocket.OPEN && ready)
           oai.send(JSON.stringify({ type:'input_audio_buffer.append', audio:b64 }));
-        else queue.push(b64);
-      } else if (m.event==='stop') {
-        console.log('[WS] stop', transcript.length,'échanges');
+        else if (oai) queue.push(b64);
+      }
+
+      else if (m.event==='stop') {
+        console.log(`[WS] STOP — ${transcript.length} échanges`);
         flush();
         if (oai) try{oai.close();}catch(_){}
       }
     } catch(e) { console.error('[WS parse]',e.message); }
   });
 
-  ws.on('close', ()=>{ console.log('[WS] fermé'); flush(); if(oai) try{oai.close();}catch(_){} });
+  ws.on('close', ()=>{ console.log('[WS] Connexion fermée'); flush(); if(oai) try{oai.close();}catch(_){} });
   ws.on('error', e=>console.error('[WS err]',e.message));
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 VoiceImmo v2 démarré port ${PORT}`));
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log(`🚀 VoiceImmo v3 démarré port ${PORT}`));
