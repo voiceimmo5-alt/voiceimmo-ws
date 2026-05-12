@@ -89,8 +89,12 @@ async function gmailSend(toAddr, subject, body) {
       body: JSON.stringify({ raw })
     });
     const gd = await gr.json();
-    if (gr.ok) console.log('[EMAIL] ✅', gd.id);
-    else console.error('[EMAIL] ❌', JSON.stringify(gd));
+    if (gr.ok) {
+      console.log(`[EMAIL] ✅ Envoyé | id:${gd.id} | to:${toAddr} | subject:${subject}`);
+      console.log(`[EMAIL] 📝 Contenu: ${body.slice(0,300).replace(/\n/g,' ')}`);
+    } else {
+      console.error(`[EMAIL] ❌ Échec | to:${toAddr} | err:${JSON.stringify(gd)}`);
+    }
   } catch(e) { console.error('[EMAIL]', e.message); }
 }
 
