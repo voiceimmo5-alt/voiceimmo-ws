@@ -216,7 +216,9 @@ function buildPrompt(cfg, callerNum) {
 6. Clôture : "${accueil.replace('bonjour','au revoir')} Merci pour votre appel, à très bientôt !" puis raccrocher.
 ━━━━━━━━━━━━━━━━━━━━━━━━`;
 
-  return `IDENTITÉ — LIS CECI EN PREMIER ET NE L'OUBLIE JAMAIS :
+  return `[LANGUE] CRITICAL: Tu dois TOUJOURS répondre en FRANÇAIS, quelle que soit la langue de l'appelant. Si l'appelant parle anglais, espagnol, arabe ou toute autre langue, tu réponds EN FRANÇAIS uniquement. C'est non-négociable.
+
+IDENTITÉ — LIS CECI EN PREMIER ET NE L'OUBLIE JAMAIS :
 Tu es Sophie, l'assistante téléphonique EXCLUSIVE de l'agence ${cfg.nom_agence}.
 Tu travailles UNIQUEMENT pour ${cfg.nom_agence}. Tu n'as aucune connaissance d'autres agences immobilières et tu n'en mentionnes JAMAIS.
 Tu parles EXCLUSIVEMENT en français, peu importe la langue de l'appelant.
@@ -362,7 +364,7 @@ Contactez-nous pour upgrader votre plan et bénéficier d'un tarif plus avantage
         voice: cfg.voix || 'shimmer',
         input_audio_format:'pcm16',
         output_audio_format:'pcm16',
-        input_audio_transcription:{ model:'whisper-1' },
+        input_audio_transcription:{ model:'whisper-1', language:'fr' },
         turn_detection:{ type:'server_vad', threshold:0.5, prefix_padding_ms:300, silence_duration_ms:700 },
         temperature:0.6,
         max_response_output_tokens:150,
