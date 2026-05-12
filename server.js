@@ -133,10 +133,14 @@ async function getClientConfig(numeroTwilio) {
 
   try {
     const normNum = numeroTwilio.replace(/\s/g, '');
-    console.log(`[CFG] Recherche client pour: "${normNum}"`);
+    console.log(`[CFG] Recherche client pour: "${normNum}" (original: "${numeroTwilio}")`);
     const clients = await b44List('Client');
     console.log(`[CFG] ${clients.length} clients en base`);
-    const client = clients.find(c => c.numero_actuel && c.numero_actuel.replace(/\s/g,'') === normNum);
+    const client = clients.find(c => {
+      if (!c.numero_actuel) return false;
+      const cn = c.numero_actuel.replace(/\s/g,'');
+      return cn === normNum || cn === normNum.replace(/^\+33/,'0') || ('0'+normNum.replace(/^\+33/,'')) === cn;
+    });
 
     if (!client) {
       console.log(`[CFG] ⚠️ Pas de client pour ${normNum} — utilisation config par défaut`);
@@ -194,22 +198,20 @@ async function getClientConfig(numeroTwilio) {
 function buildPrompt(cfg, callerNum) {
   const accueil  = (cfg.message_accueil||'').trim() || `${cfg.nom_agence}, bonjour !`;
   const annonces = cfg.annonces_cache ? `\nBIENS DISPONIBLES :\n${cfg.annonces_cache}` : '\n(Aucune annonce disponible pour l\'instant)';
-  const scenario = cfg.scraping_format?.trim()
-    ? `\n━━ INSTRUCTIONS PRIORITAIRES ━━\n${cfg.scraping_format.trim()}\n━━━━━━━━━━━━━━━━━━━━━━━━` : '';
 
-  return `Tu es l'assistante téléphonique de ${cfg.nom_agence}. Tu parles UNIQUEMENT en français. Tu es chaleureuse, concise et naturelle.
+  // Si un scénario IA est défini, il est PRIORITAIRE et remplace le flux par défaut
+  if (cfg.scraping_format && cfg.scraping_format.trim()) {
+    const scenario = cfg.scraping_format.trim()
+      .replace(/\[NUMÉRO\]/g, callerNum||'numéro non détecté')
+      .replace(/\[numéro\]/gi, callerNum||'numéro non détecté');
+
+    return `Tu es l'assistante téléphonique de ${cfg.nom_agence}. Tu parles UNIQUEMENT en français, jamais en anglais.
 
 ━━ ACCUEIL OBLIGATOIRE ━━
 Ta toute première phrase doit être EXACTEMENT : "${accueil}"
-Rien d'autre avant. Pas de prénom. Pas de "je suis". Commence DIRECTEMENT par cette phrase.
+Commence DIRECTEMENT par cette phrase, sans rien ajouter avant.
 
-━━ FLUX DE L'APPEL (une question à la fois) ━━
-1. Besoin : achat / vente / renseignement ?
-2. Ville ou secteur ?
-3. Budget envisagé ?
-4. Prénom et nom ?
-5. Confirmation numéro : "Vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
-6. Clôture : "Merci pour votre appel, à très bientôt !" puis raccrocher immédiatement.
+━━ SCÉNARIO À SUIVRE STRICTEMENT ━━
 ${scenario}
 
 Agents par secteur :
@@ -219,7 +221,35 @@ Horaires : ${cfg.horaires}
 ${annonces}
 
 RÈGLES ABSOLUES :
-- Réponds TOUJOURS en français, jamais en anglais
+- TOUJOURS en français
+- Une seule question par réponse
+- Suis le scénario ci-dessus à la lettre
+- Commence par "${accueil}" sans exception`;
+  }
+
+  // Flux par défaut (si pas de scénario défini)
+  return `Tu es l'assistante téléphonique de ${cfg.nom_agence}. Tu parles UNIQUEMENT en français. Tu es chaleureuse, concise et naturelle.
+
+━━ ACCUEIL OBLIGATOIRE ━━
+Ta toute première phrase doit être EXACTEMENT : "${accueil}"
+Rien d'autre avant. Commence DIRECTEMENT par cette phrase.
+
+━━ FLUX DE L'APPEL ━━
+1. Besoin : achat / vente / renseignement ?
+2. Ville ou secteur ?
+3. Budget envisagé ?
+4. Prénom et nom ?
+5. Confirmation numéro : "Vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
+6. Clôture : "Merci pour votre appel, à très bientôt !" puis raccrocher immédiatement.
+
+Agents par secteur :
+${cfg.agents}
+
+Horaires : ${cfg.horaires}
+${annonces}
+
+RÈGLES ABSOLUES :
+- TOUJOURS en français
 - Une seule question par réponse
 - Max 2 phrases par tour
 - Commence par "${accueil}" sans exception`;
@@ -254,11 +284,14 @@ wss.on('connection', async (ws, req) => {
     const now = new Date().toLocaleString('fr-FR',{timeZone:'Europe/Paris'});
     const tel = lead.tel || callerRaw;
     // Créer le lead en base
-    b44Create('Lead', {
+    const leadResult = await b44Create('Lead', {
       nom: lead.nom||'Inconnu', telephone: tel,
-      besoin: lead.besoin||'Appel entrant', agent_nom: ag, statut: 'Nouveau',
-      notes: `CallSid:${callSid}|Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}|client_id:${cfg.client_id||'?'}|Discussion:${tx}`
+      besoin: lead.besoin||'Appel entrant', agent_nom: ag,
+      agent_initiales: lead.agent ? lead.agent.split(' ').map(w=>w[0]).join('').toUpperCase() : 'LC',
+      statut: 'Nouveau',
+      notes: `Ville:${lead.ville||'?'}|Prix:${lead.prix||'?'}|Réf:${lead.ref||'?'}|CallSid:${callSid}|client_id:${cfg.client_id||'?'}\n\n${tx}`
     });
+    console.log('[LEAD] Résultat création:', leadResult ? '✅ OK id='+leadResult.id : '❌ ECHEC');
     console.log('[LEAD] ✅', lead.nom||'Inconnu', tel, '→', ag);
 
     // Incrémenter les compteurs d'appels du client
