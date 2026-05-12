@@ -47,7 +47,7 @@ app.post('/twiml', (req, res) => {
 // ─── Helpers Base44 ───────────────────────────────────────────────────────────
 async function b44List(entity) {
   try {
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/`, {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
       headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, Accept: 'application/json' }
     });
     const d = await r.json();
@@ -57,7 +57,7 @@ async function b44List(entity) {
 
 async function b44Create(entity, data) {
   try {
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/`, {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -74,7 +74,7 @@ async function b44Create(entity, data) {
 
 async function b44Update(entity, id, data) {
   try {
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}/`, {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -438,7 +438,12 @@ Contactez-nous pour upgrader votre plan et bénéficier d'un tarif plus avantage
             const am = allIA.match(/\b(luca|jeff|kenny)\b/i);
             if (am) lead.agent = am[1].toLowerCase()==='luca'?'Luca CIMMARUSTI':am[1].toLowerCase()==='jeff'?'Jeff PIGEAT':'Kenny PIGEAT';
           }
-          const isEnd = lastIA.includes('très bientôt') || lastIA.includes('au revoir') || lastIA.includes('bonne journée');
+          // Détecter la clôture sur toutes les variantes possibles
+          const isEnd = lastIA.includes('très bientôt') || lastIA.includes('au revoir') 
+            || lastIA.includes('bonne journée') || lastIA.includes('à bientôt')
+            || lastIA.includes('rappeler') || lastIA.includes('vous rappellera')
+            || lastIA.includes('léone immobilier') || lastIA.includes('leone immobilier')
+            || lastIA.includes('noté votre demande') || lastIA.includes('bonne journée');
           if (isEnd && (lead.tel||callerRaw)) {
             flush();
             // Attendre que l'audio soit joué puis raccrocher
