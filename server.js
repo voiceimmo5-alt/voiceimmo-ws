@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v17-hardcoded', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v18-leads-fix', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -94,19 +94,33 @@ async function b44List(entity) {
 
 async function b44Create(entity, data) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      signal: controller.signal
     });
-    if (!r.ok) console.error(`[B44] create ${entity} HTTP:${r.status}`);
+    clearTimeout(timeout);
+    if (!r.ok) {
+      const txt = await r.text().catch(()=>'');
+      console.error(`[B44] create ${entity} HTTP:${r.status}`, txt.slice(0,200));
+    } else {
+      const res = await r.json().catch(()=>({}));
+      console.log(`[B44] ✅ create ${entity} id:${res.id||'?'}`);
+      return res;
+    }
   } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
 }
 
 async function b44Update(entity, id, data) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}`, {
-      method: 'PATCH',
+      method: 'PUT',
+      signal: controller.signal,
       headers: { Authorization: `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
@@ -325,6 +339,9 @@ const r24_8= p=>{ const l=Math.floor(p.length/3),o=new Int16Array(l); for(let i=
 const p2u  = s=>{ const B=0x84,M=32767;let v=Math.max(-M,Math.min(M,s));const sg=v<0?0x80:0;if(v<0)v=-v;v=Math.min(v+B,M);let e=7;for(let m=0x4000;(v&m)===0&&e>0;e--,m>>=1){}return ~(sg|(e<<4)|((v>>(e+3))&0xF))&0xFF; };
 const pb2u = p=>{ const o=new Uint8Array(p.length); for(let i=0;i<p.length;i++) o[i]=p2u(p[i]); return o; };
 
+// ─── Config par défaut module-level ──────────────────────────────────────────
+let DEF_CFG = null; // sera initialisé au premier appel
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 wss.on('connection', async (ws, req) => {
   console.log(`[WS] Nouvelle connexion depuis ${req.socket.remoteAddress}`);
@@ -341,7 +358,8 @@ wss.on('connection', async (ws, req) => {
 
   // ─── Sauvegarder le lead et envoyer l'email ───────────────────────────────
   function flush() {
-    if (saved || !cfg) return; saved = true;
+    if (saved) return; saved = true;
+    if (!cfg) cfg = DEF_CFG;
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
 
     const tx  = transcript.map(m=>`${m.r==='a'?'IA':'Client'}: ${m.t}`).join('\n');
@@ -563,6 +581,7 @@ wss.on('connection', async (ws, req) => {
         const numToLoad = toRaw || '';
         console.log(`[CFG] Chargement config pour: "${numToLoad}"`);
         cfg = await getClientConfig(numToLoad || undefined);
+        if (!DEF_CFG) DEF_CFG = cfg; // Sauvegarder pour flush() si cfg devient null
         connectOAI(lead.tel);
         startCallTimer(); // ⏱️ Démarrer le timer 2 minutes
       }
