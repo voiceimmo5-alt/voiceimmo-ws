@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v18-leads-fix', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v19-bridge', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -39,10 +39,13 @@ app.get('/debug', async (req, res) => {
   const hasB44 = !!process.env.BASE44_SERVICE_TOKEN;
   let b44Ok = false, oaiOk = false;
   try {
-    const r = await fetch('https://fr-2758ee0c.base44.app/api/entities/Client', {
-      headers: { Authorization: `Bearer ${process.env.BASE44_SERVICE_TOKEN}` }
+    const r = await fetch(BRIDGE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Voxzen-Secret': BRIDGE_SECRET },
+      body: JSON.stringify({ action: 'getClient', data: { numero: 'test' } })
     });
-    b44Ok = r.ok;
+    const d = await r.json();
+    b44Ok = r.ok && d.success !== undefined;
   } catch(e) {}
   try {
     const r = await fetch('https://api.openai.com/v1/models', {
@@ -76,56 +79,56 @@ app.post('/twiml', (req, res) => {
 </Response>`);
 });
 
-// ─── Helpers Base44 ───────────────────────────────────────────────────────────
-async function b44List(entity) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
-      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, Accept: 'application/json' },
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    if (!r.ok) { console.error(`[B44] list ${entity} HTTP:${r.status}`); return []; }
-    const d = await r.json();
-    return Array.isArray(d) ? d : (d.records || []);
-  } catch(e) { console.error(`[B44] ${entity}:`, e.message); return []; }
-}
+// ─── Helpers Base44 (via Bridge vapiWebhook) ─────────────────────────────────
+// Railway ne peut pas accéder directement à l'API Base44 → on passe par la fonction bridge
+const BRIDGE_URL = 'https://fr-2758ee0c.base44.app/functions/vapiWebhook';
+const BRIDGE_SECRET = 'voxzen-railway-2026';
 
-async function b44Create(entity, data) {
+async function bridgeCall(action, data, id) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
+    const r = await fetch(BRIDGE_URL, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      headers: { 'Content-Type': 'application/json', 'X-Voxzen-Secret': BRIDGE_SECRET },
+      body: JSON.stringify({ action, data, id }),
       signal: controller.signal
     });
     clearTimeout(timeout);
     if (!r.ok) {
       const txt = await r.text().catch(()=>'');
-      console.error(`[B44] create ${entity} HTTP:${r.status}`, txt.slice(0,200));
-    } else {
-      const res = await r.json().catch(()=>({}));
-      console.log(`[B44] ✅ create ${entity} id:${res.id||'?'}`);
-      return res;
+      console.error(`[BRIDGE] ${action} HTTP:${r.status}`, txt.slice(0,200));
+      return null;
     }
-  } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
+    return await r.json();
+  } catch(e) { console.error(`[BRIDGE] ${action}:`, e.message); return null; }
+}
+
+async function b44List(entity) {
+  // Pour la liste, on utilise getClient si c'est Client, sinon retour vide (pas nécessaire)
+  if (entity === 'Client') {
+    console.error('[B44] b44List(Client) via bridge non supporté — utiliser getClientConfig directement');
+    return [];
+  }
+  return [];
+}
+
+async function b44Create(entity, data) {
+  if (entity === 'Lead') {
+    const res = await bridgeCall('createLead', data);
+    if (res && res.success) {
+      console.log(`[BRIDGE] ✅ Lead créé id:${res.id}`);
+      return { id: res.id };
+    }
+  }
+  return null;
 }
 
 async function b44Update(entity, id, data) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}`, {
-      method: 'PUT',
-      signal: controller.signal,
-      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    if (!r.ok) console.error(`[B44] update ${entity} HTTP:${r.status}`);
-  } catch(e) { console.error(`[B44] update ${entity}:`, e.message); }
+  if (entity === 'Client') {
+    const res = await bridgeCall('updateClient', data, id);
+    if (res && res.success) console.log(`[BRIDGE] ✅ Client màj:${id}`);
+  }
 }
 
 async function gmailSend(toAddr, subject, body) {
@@ -196,10 +199,10 @@ Puis raccrocher.`,
 
   try {
     const normNum = numeroTwilio.replace(/\s/g, '');
-    console.log(`[CFG] Recherche client pour: "${normNum}"`);
-    const clients = await b44List('Client');
-    console.log(`[CFG] ${clients.length} clients en base`);
-    const client = clients.find(c => c.numero_actuel && c.numero_actuel.replace(/\s/g,'') === normNum);
+    console.log(`[CFG] Recherche client pour: "${normNum}" via bridge`);
+    const bridgeRes = await bridgeCall('getClient', { numero: normNum });
+    const client = bridgeRes && bridgeRes.success ? bridgeRes.client : null;
+    console.log(`[CFG] Bridge réponse:`, client ? `${client.nom_entreprise}` : 'null');
 
     if (!client) {
       console.log(`[CFG] ⚠️ Pas de client pour ${normNum} — utilisation config par défaut`);
