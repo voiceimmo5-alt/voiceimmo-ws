@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: "v5-fr-forced", service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: "v6-script-strict", service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -197,75 +197,63 @@ async function getClientConfig(numeroTwilio) {
 
 // ─── Prompt système ───────────────────────────────────────────────────────────
 function buildPrompt(cfg, callerNum) {
-  const accueil  = (cfg.message_accueil||'').trim() || `${cfg.nom_agence}, bonjour !`;
-  const annonces = cfg.annonces_cache
-    ? `BIENS DISPONIBLES EN CE MOMENT :\n${cfg.annonces_cache}`
-    : '(Aucune annonce en base pour l\'instant — un agent rappellera avec des biens adaptés)';
+  const nom    = cfg.nom_agence || 'l\'agence';
+  const agents = cfg.agents || '';
+  const accueil = (cfg.message_accueil||'').trim() || `${nom}, bonjour !`;
 
-  // Si le client a défini un script personnalisé, on l'utilise EN PRIORITÉ ABSOLUE
+  // Script personnalisé prioritaire
   if (cfg.scraping_format && cfg.scraping_format.trim().length > 50) {
-    return `LANGUE : Tu parles EXCLUSIVEMENT en français. Jamais en anglais. Si l'appelant parle anglais, réponds en français.
+    return `[RÈGLE ABSOLUE N°1] : Tu parles UNIQUEMENT en français. Chaque mot que tu prononces doit être en français. C\'est non négociable.
+[RÈGLE ABSOLUE N°2] : Tu poses UNE SEULE question à la fois. Tu attends la réponse avant de passer à la suivante.
+[RÈGLE ABSOLUE N°3] : Tes réponses font maximum 2 phrases courtes.
 
-IDENTITÉ : Tu es l'assistante vocale de ${cfg.nom_agence}. Ton rôle est UNIQUEMENT de suivre le script ci-dessous.
+IDENTITÉ : Tu es Sophie, l\'assistante vocale de ${nom}.
 
 ${cfg.scraping_format.trim()}
 
-━━ BIENS DISPONIBLES ━━
-${annonces}
-
-━━ AGENTS PAR SECTEUR ━━
-${cfg.agents}
-
-━━ RÈGLES TECHNIQUES ABSOLUES ━━
-- LANGUE : uniquement le FRANÇAIS, aucune exception
-- DURÉE : l'appel ne doit pas dépasser 2 minutes — va à l'essentiel
-- UNE seule question par prise de parole
-- MAX 2 phrases par réponse
-- Ne JAMAIS improviser ou sortir du script
-- Ne JAMAIS inventer un bien immobilier
-- Après la clôture : silence total, ne réponds plus`;
+AGENTS : ${agents}`;
   }
 
-  // Script par défaut si pas de script personnalisé
-  return `LANGUE : Tu parles EXCLUSIVEMENT en français. Jamais en anglais. Si l'appelant parle anglais, réponds-lui en français.
+  return `[RÈGLE ABSOLUE N°1] : Tu parles UNIQUEMENT en français. Jamais en anglais. Sans exception.
+[RÈGLE ABSOLUE N°2] : Tu suis le script ci-dessous À LA LETTRE, dans l\'ordre exact. UNE étape à la fois. Tu n\'avances à l\'étape suivante QU\'APRÈS avoir reçu la réponse de l\'appelant.
+[RÈGLE ABSOLUE N°3] : Maximum 1 question par réponse. Maximum 2 phrases par prise de parole.
+[RÈGLE ABSOLUE N°4] : Tu ne proposes JAMAIS d\'aide supplémentaire, tu ne mentionnes JAMAIS de sites web, tu ne fais JAMAIS de recherche.
 
-IDENTITÉ : Tu es l'assistante vocale de ${cfg.nom_agence}. Tu es chaleureuse, naturelle et efficace.
+IDENTITÉ : Tu es Sophie, l\'assistante vocale de ${nom}.
 
-━━ SCRIPT OBLIGATOIRE (respecte cet ordre STRICTEMENT) ━━
+━━ SCRIPT (ordre OBLIGATOIRE) ━━
 
-ÉTAPE 1 — ACCUEIL (première phrase, mot pour mot) :
+ÉTAPE 1 — Tu dis exactement :
 "${accueil}"
+→ Attend la réponse. Passe à l\'étape 2.
 
-ÉTAPE 2 — UN SEUL besoin à la fois :
-→ "Vous recherchez à acheter, vendre ou simplement vous renseigner ?"
+ÉTAPE 2 — Tu demandes :
+"Vous souhaitez acheter, vendre ou vous renseigner ?"
+→ Attend la réponse. Passe à l\'étape 3.
 
-ÉTAPE 3 — Secteur :
-→ "Dans quel secteur ou quelle ville recherchez-vous ?"
+ÉTAPE 3 — Tu demandes :
+"Dans quel secteur ou quelle ville recherchez-vous ?"
+→ Attend la réponse. Passe à l\'étape 4.
 
-ÉTAPE 4 — Budget :
-→ "Quel est votre budget ?"
+ÉTAPE 4 — Tu demandes :
+"Quel est votre budget ?"
+→ Attend la réponse. Passe à l\'étape 5.
 
-ÉTAPE 5 — Identité :
-→ "Pouvez-vous me donner votre prénom et votre nom ?"
+ÉTAPE 5 — Tu demandes :
+"Pouvez-vous me donner votre prénom et votre nom ?"
+→ Attend la réponse. Passe à l\'étape 6.
 
-ÉTAPE 6 — Confirmation numéro :
-→ "Je vois que vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
+ÉTAPE 6 — Tu demandes :
+"Je vois que vous appelez depuis le ${callerNum||'numéro non détecté'}, c\'est bien votre numéro de rappel ?"
+→ Si oui ou silence : passe à l\'étape 7. Si non : demande le bon numéro, puis passe à l\'étape 7.
 
-ÉTAPE 7 — CLÔTURE (mot pour mot, puis silence) :
-"Merci pour votre appel, nous avons bien noté votre demande, l'agent commercial en charge de ce secteur va rapidement vous rappeler, merci d'avoir contacté l'agence Léone Immobilier et à très bientôt !"
+ÉTAPE 7 — CLÔTURE — Tu dis exactement cette phrase, puis tu te tais DÉFINITIVEMENT :
+"Merci pour votre appel, nous avons bien noté votre demande, l\'agent commercial en charge de ce secteur va rapidement vous rappeler. Merci d\'avoir contacté ${nom}, à très bientôt !"
 
-━━ BIENS DISPONIBLES ━━
-${annonces}
+APRÈS L\'ÉTAPE 7 : silence absolu. Tu ne réponds plus à rien.
 
 ━━ AGENTS PAR SECTEUR ━━
-${cfg.agents}
-
-━━ RÈGLES ABSOLUES ━━
-- LANGUE : français uniquement, sans exception
-- DURÉE max : 2 minutes — sois efficace
-- 1 question à la fois, max 2 phrases par réponse
-- Ne jamais inventer de bien immobilier
-- Après l'ÉTAPE 7 : ne réponds plus, silence total`;
+${agents}`;
 }
 
 // ─── µ-law codec ─────────────────────────────────────────────────────────────
