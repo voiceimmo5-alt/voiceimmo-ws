@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v20-oai-fix', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v21-init-fix', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -482,18 +482,19 @@ wss.on('connection', async (ws, req) => {
 
         if (m.type==='session.updated' && !ready) {
           ready = true;
-          console.log('[OAI] Session prête → déclenchement réponse initiale en FR');
-          // Injecter un message système pour forcer la langue FR avant la première réponse
           const accueilMsg = (cfg && cfg.message_accueil) ? cfg.message_accueil : 'Bonjour, comment puis-je vous aider ?';
+          console.log('[OAI] Session prête → accueil:', accueilMsg.slice(0,60));
+
+          // Forcer Sophie à prononcer le message d'accueil immédiatement
           oai.send(JSON.stringify({
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'user',
-              content: [{ type: 'input_text', text: 'Bonjour' }]
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `Tu es Sophie. Dis UNIQUEMENT et EXACTEMENT ce message d'accueil en français, rien d'autre : "${accueilMsg}"`,
             }
           }));
-          oai.send(JSON.stringify({ type: 'response.create' }));
+
+          // Drainer la queue audio Twilio reçue avant que OAI soit prêt
           for (const c of queue) oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
           queue.length = 0;
         }
