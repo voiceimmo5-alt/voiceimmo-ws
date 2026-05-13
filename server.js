@@ -30,6 +30,29 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
+app.get('/debug', async (req, res) => {
+  try {
+    const r = await fetch(`${BASE44_URL}/entities/Client`, {
+      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' }
+    });
+    const text = await r.text();
+    let clients = [];
+    try { clients = JSON.parse(text); } catch(e) { clients = { error: text.slice(0,200) }; }
+    res.json({
+      version: "v10-tokens-fixed",
+      b44_url: BASE44_URL,
+      b44_token_prefix: BASE44_API_KEY ? BASE44_API_KEY.slice(0,20)+'...' : 'MISSING',
+      oai_key_present: !!OPENAI_API_KEY,
+      oai_key_prefix: OPENAI_API_KEY ? OPENAI_API_KEY.slice(0,8)+'...' : 'MISSING',
+      b44_status: r.status,
+      clients_count: Array.isArray(clients) ? clients.length : 'error',
+      clients_sample: Array.isArray(clients) ? clients.map(c=>({id:c.id,numero:c.numero_twilio,nom:c.nom_entreprise})) : clients
+    });
+  } catch(e) {
+    res.json({ error: e.message });
+  }
+});
+
 app.get('/', (req, res) => res.json({ status: 'ok', version: "v10-tokens-fixed", service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
