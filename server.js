@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v15-fix-voice', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v16-g711', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -388,8 +388,8 @@ wss.on('connection', async (ws, req) => {
           modalities: ['text', 'audio'],
           instructions: buildPrompt(cfg, callerNum),
           voice: (['alloy','ash','ballad','coral','echo','sage','shimmer','verse','marin','cedar'].includes(cfg.voix) ? cfg.voix : 'coral'),
-          input_audio_format: 'pcm16',
-          output_audio_format: 'pcm16',
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
           input_audio_transcription: { model: 'whisper-1', language: 'fr' },
           turn_detection: {
             type: 'server_vad',
@@ -426,11 +426,9 @@ wss.on('connection', async (ws, req) => {
         }
 
         if (m.type==='response.audio.delta' && m.delta && streamSid) {
-          const raw  = Buffer.from(m.delta, 'base64');
-          const pcm  = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
-          const ulaw = pb2u(r24_8(pcm));
+          // OpenAI envoie déjà du g711_ulaw → envoi direct à Twilio sans conversion
           if (ws.readyState === WebSocket.OPEN)
-            ws.send(JSON.stringify({ event:'media', streamSid, media:{ payload: Buffer.from(ulaw).toString('base64') } }));
+            ws.send(JSON.stringify({ event:'media', streamSid, media:{ payload: m.delta } }));
         }
 
         if (m.type==='response.audio_transcript.delta' && m.delta) curAss += m.delta;
@@ -524,10 +522,8 @@ wss.on('connection', async (ws, req) => {
       }
 
       else if (m.event==='media' && m.media?.payload) {
-        const ulaw = Buffer.from(m.media.payload, 'base64');
-        const pcm  = u2p(new Uint8Array(ulaw));
-        const up   = r8_24(pcm);
-        const b64  = Buffer.from(new Int16Array(up).buffer).toString('base64');
+        // Twilio envoie du g711_ulaw → envoi direct à OAI sans conversion
+        const b64 = m.media.payload;
         if (oai && oai.readyState === WebSocket.OPEN && ready)
           oai.send(JSON.stringify({ type:'input_audio_buffer.append', audio:b64 }));
         else if (oai) queue.push(b64);
