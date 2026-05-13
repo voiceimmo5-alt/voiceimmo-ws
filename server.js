@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v14-fix-role', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v15-fix-voice', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -387,7 +387,7 @@ wss.on('connection', async (ws, req) => {
         session: {
           modalities: ['text', 'audio'],
           instructions: buildPrompt(cfg, callerNum),
-          voice: cfg.voix || 'shimmer',
+          voice: (['alloy','ash','ballad','coral','echo','sage','shimmer','verse','marin','cedar'].includes(cfg.voix) ? cfg.voix : 'coral'),
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',
           input_audio_transcription: { model: 'whisper-1', language: 'fr' },
