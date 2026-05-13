@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v16-g711-debug', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v17-hardcoded', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -79,9 +79,13 @@ app.post('/twiml', (req, res) => {
 // ─── Helpers Base44 ───────────────────────────────────────────────────────────
 async function b44List(entity) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
     const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
-      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, Accept: 'application/json' }
+      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, Accept: 'application/json' },
+      signal: controller.signal
     });
+    clearTimeout(timeout);
     if (!r.ok) { console.error(`[B44] list ${entity} HTTP:${r.status}`); return []; }
     const d = await r.json();
     return Array.isArray(d) ? d : (d.records || []);
@@ -142,14 +146,36 @@ async function gmailSend(toAddr, subject, body) {
 
 // ─── Config client ────────────────────────────────────────────────────────────
 async function getClientConfig(numeroTwilio) {
+  // Config hardcodée Leone Immobilier (fallback si Base44 inaccessible)
   const DEF = {
     nom_agence: 'LEONE IMMOBILIER',
+    client_id: 'VX-0001',
+    client_db_id: '6a03042d6c4e45eec21bedd5',
     horaires: 'du lundi au samedi de 09h30 à 12h et de 14h à 19h',
-    destinataires_email: process.env.NOTIFICATION_EMAIL || 'christophe.despretz@gmail.com',
-    agents: 'Jeff PIGEAT : Villefranche-sur-Saône, Beaujolais, Nord Rhône\nKenny PIGEAT : Givors, Grigny, Vienne, Sud Rhône\nLuca CIMMARUSTI : Pierre-Bénite, Oullins, Lyon et tout autre secteur',
-    annonces_cache: '', voix: 'shimmer',
-    message_accueil: 'Leone Immobilier, bonjour !',
-    scraping_format: '', site_internet: '',
+    destinataires_email: 'leone.immobilier@gmail.com',
+    agents: 'Luca : givors, montany, pont eveque, tassin, st genis laval, charly, irigny, corbas\nkenny : villette de vienne\nJeff : villefontaine',
+    agents_arr: [{"nom": "Luca", "email": "leone.immobilier@gmail.com", "zones": "givors, montany, pont eveque, tassin, st genis laval, charly, irigny, corbas"}, {"nom": "kenny", "email": "kenny.leoneimmobilier@gmail.com", "zones": "villette de vienne"}, {"nom": "Jeff", "email": "jeff.leoneimmobilier@gmail.com", "zones": "villefontaine"}],
+    annonces_cache: '',
+    voix: 'coral',
+    message_accueil: "Bonjour et bienvenue à l'agence Leone immobilier, comment puis-je vous aider ?",
+    scraping_format: `SCRIPT VOICEBOT — LEONE IMMOBILIER
+
+1. ACCUEIL
+Dire exactement : "Bonjour et bienvenue à l'agence Leone immobilier, comment puis-je vous aider ?"
+
+2. COLLECTER (dans l'ordre, UNE seule question à la fois)
+   a. Ville / secteur du bien recherché
+   b. Budget maximum
+   c. Prénom et nom de l'appelant
+   d. Confirmer le numéro : "Je rappelle que votre numéro est le [NUMÉRO], c'est bien ça ?"
+
+3. CLÔTURE
+Dire exactement : "Merci pour votre appel, nous avons bien noté votre demande, l'agent commercial va rapidement vous rappeler, merci d'avoir contacté l'agence Léone Immobilier et à très bientôt !"
+Puis raccrocher.`,
+    site_internet: 'https://www.leone-immobilier.fr',
+    regles_dispatch: 'LC/LCC→Luca CIMMARUSTI, JP→Jeff PIGEAT, kp→Kenny PIGEAT',
+    numero_actuel: '+33939245959',
+    appels_mois: 0,
   };
 
   if (!numeroTwilio) return DEF;
