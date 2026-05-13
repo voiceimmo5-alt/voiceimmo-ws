@@ -21,7 +21,7 @@ const wss    = new WebSocketServer({ server, path: '/' });
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const APP_ID         = '69edcbff1c52f6e82758ee0c';
-const BASE44_API_KEY = process.env.BASE44_SERVICE_TOKEN || '';
+const BASE44_API_KEY = process.env.BASE44_SERVICE_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmMDg4NGYwOS00Njg2LTQwMDQtYmU2ZS00YjA2OThhMzFlYzMiLCJjbGllbnRfaWQiOiJmMDg4NGYwOS00Njg2LTQwMDQtYmU2ZS00YjA2OThhMzFlYzMiLCJhcHBfaWQiOiI2OWVkY2JmZjFjNTJmNmU4Mjc1OGVlMGMiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzc4NjM2MzM3LCJpYXQiOjE3Nzg2MzI3Mzd9.jI5B36ujp340x-z-rFVZ2j3sAMXZPsBKGcJ2-1IKmSI';
 
 // Limite d'appel en ms (2 minutes)
 const CALL_MAX_MS = 2 * 60 * 1000;
