@@ -59,8 +59,8 @@ app.post('/twiml', (req, res) => {
 // ─── Helpers Base44 ───────────────────────────────────────────────────────────
 async function b44List(entity) {
   try {
-    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
-      headers: { 'x-api-key': BASE44_API_KEY, Accept: 'application/json' }
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
+      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Accept': 'application/json' }
     });
     const d = await r.json();
     return Array.isArray(d) ? d : (d.records || []);
@@ -69,18 +69,34 @@ async function b44List(entity) {
 
 async function b44Create(entity, data) {
   try {
-    await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
       method: 'POST',
-      headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-  } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
+    const txt = await r.text();
+    if (r.ok) { console.log(`[B44] ✅ ${entity} créé OK`); return JSON.parse(txt); }
+    else { console.error(`[B44] create ${entity} ERREUR ${r.status}:`, txt.slice(0,200)); return null; }
+  } catch(e) { console.error(`[B44] create ${entity}:`, e.message); return null; }
+}
+
+async function b44Update(entity, id, data) {
+  try {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const txt = await r.text();
+    if (r.ok) { console.log(`[B44] ✅ ${entity}/${id} mis à jour`); return JSON.parse(txt); }
+    else { console.error(`[B44] update ${entity} ERREUR ${r.status}:`, txt.slice(0,200)); return null; }
+  } catch(e) { console.error(`[B44] update ${entity}:`, e.message); return null; }
 }
 
 async function gmailSend(toAddr, subject, body) {
   try {
-    const tr = await fetch(`https://api.base44.com/api/apps/${APP_ID}/connectors/gmail/token`, {
-      headers: { 'x-api-key': BASE44_API_KEY }
+    const tr = await fetch(`https://fr-2758ee0c.base44.app/api/connectors/gmail/token`, {
+      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}` }
     });
     const { access_token } = await tr.json();
     const msg = [
