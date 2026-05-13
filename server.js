@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v23-testcall', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v24-wslog', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -457,6 +457,10 @@ let DEF_CFG = null; // sera initialisé au premier appel
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 wss.on('connection', async (ws, req) => {
+  console.log('[WS] ✅ NOUVELLE CONNEXION WebSocket - path:', req.url, '| ip:', req.socket.remoteAddress);
+  
+  // Répondre immédiatement avec un ping pour confirmer la connexion
+  try { ws.send(JSON.stringify({ event: 'ping', service: 'VoiceImmo' })); } catch(_) {}
   console.log(`[WS] Nouvelle connexion depuis ${req.socket.remoteAddress}`);
 
   let callerRaw = '', toRaw = '', callSid = 'unknown';
