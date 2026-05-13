@@ -19,9 +19,9 @@ const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server, path: '/' });
 
-const OPENAI_API_KEY  = process.env.OPENAI_API_KEY  || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const APP_ID         = '69edcbff1c52f6e82758ee0c';
-const BASE44_API_KEY = process.env.BASE44_SERVICE_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmMDg4NGYwOS00Njg2LTQwMDQtYmU2ZS00YjA2OThhMzFlYzMiLCJjbGllbnRfaWQiOiJmMDg4NGYwOS00Njg2LTQwMDQtYmU2ZS00YjA2OThhMzFlYzMiLCJhcHBfaWQiOiI2OWVkY2JmZjFjNTJmNmU4Mjc1OGVlMGMiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzc4NjQxMjE1LCJpYXQiOjE3Nzg2Mzc2MTV9.O6LVHVklJPa-c9DJZreihIiwDxwHNg8j9FyvQGULYgk';
+const BASE44_API_KEY = process.env.BASE44_SERVICE_TOKEN || '';
 
 // Limite d'appel en ms (2 minutes)
 const CALL_MAX_MS = 2 * 60 * 1000;
@@ -30,30 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/debug', async (req, res) => {
-  try {
-    const r = await fetch(`${BASE44_URL}/entities/Client`, {
-      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' }
-    });
-    const text = await r.text();
-    let clients = [];
-    try { clients = JSON.parse(text); } catch(e) { clients = { error: text.slice(0,200) }; }
-    res.json({
-      version: "v10-tokens-fixed",
-      b44_url: BASE44_URL,
-      b44_token_prefix: BASE44_API_KEY ? BASE44_API_KEY.slice(0,20)+'...' : 'MISSING',
-      oai_key_present: !!OPENAI_API_KEY,
-      oai_key_prefix: OPENAI_API_KEY ? OPENAI_API_KEY.slice(0,8)+'...' : 'MISSING',
-      b44_status: r.status,
-      clients_count: Array.isArray(clients) ? clients.length : 'error',
-      clients_sample: Array.isArray(clients) ? clients.map(c=>({id:c.id,numero:c.numero_twilio,nom:c.nom_entreprise})) : clients
-    });
-  } catch(e) {
-    res.json({ error: e.message });
-  }
-});
-
-app.get('/', (req, res) => res.json({ status: 'ok', version: "v10-tokens-fixed", service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v11-strict', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -82,8 +59,8 @@ app.post('/twiml', (req, res) => {
 // ─── Helpers Base44 ───────────────────────────────────────────────────────────
 async function b44List(entity) {
   try {
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
-      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Accept': 'application/json' }
+    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
+      headers: { 'x-api-key': BASE44_API_KEY, Accept: 'application/json' }
     });
     const d = await r.json();
     return Array.isArray(d) ? d : (d.records || []);
@@ -92,34 +69,30 @@ async function b44List(entity) {
 
 async function b44Create(entity, data) {
   try {
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
+    await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    const txt = await r.text();
-    if (r.ok) { console.log(`[B44] ✅ ${entity} créé OK`); return JSON.parse(txt); }
-    else { console.error(`[B44] create ${entity} ERREUR ${r.status}:`, txt.slice(0,200)); return null; }
-  } catch(e) { console.error(`[B44] create ${entity}:`, e.message); return null; }
+  } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
 }
 
 async function b44Update(entity, id, data) {
   try {
-    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}`, {
-      method: 'PUT',
-      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
+    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/${id}/`, {
+      method: 'PATCH',
+      headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    const txt = await r.text();
-    if (r.ok) { console.log(`[B44] ✅ ${entity}/${id} mis à jour`); return JSON.parse(txt); }
-    else { console.error(`[B44] update ${entity} ERREUR ${r.status}:`, txt.slice(0,200)); return null; }
-  } catch(e) { console.error(`[B44] update ${entity}:`, e.message); return null; }
+    const d = await r.json();
+    if (!r.ok) console.error(`[B44] update ${entity}:`, JSON.stringify(d));
+  } catch(e) { console.error(`[B44] update ${entity}:`, e.message); }
 }
 
 async function gmailSend(toAddr, subject, body) {
   try {
-    const tr = await fetch(`https://fr-2758ee0c.base44.app/api/connectors/gmail/token`, {
-      headers: { 'Authorization': `Bearer ${BASE44_API_KEY}` }
+    const tr = await fetch(`https://api.base44.com/api/apps/${APP_ID}/connectors/gmail/token`, {
+      headers: { 'x-api-key': BASE44_API_KEY }
     });
     const { access_token } = await tr.json();
     const msg = [
@@ -202,7 +175,10 @@ async function getClientConfig(numeroTwilio) {
       agents:              agentsStr,
       site_internet:       client.site_internet || '',
       scraping_format:     client.scraping_format || '',
+      id:                  client.id,
       client_id:           client.client_id || client.id,
+      appels_total:        client.appels_total || 0,
+      appels_mois:         client.appels_mois  || 0,
       annonces_cache:      '',
     };
 
@@ -220,70 +196,79 @@ async function getClientConfig(numeroTwilio) {
 
 // ─── Prompt système ───────────────────────────────────────────────────────────
 function buildPrompt(cfg, callerNum) {
-  const nom     = cfg.nom_agence || "l'agence";
-  const accueil = (cfg.message_accueil||'').trim() || `${nom}, bonjour !`;
+  const accueil  = (cfg.message_accueil||'').trim() || `${cfg.nom_agence}, bonjour !`;
   const annonces = cfg.annonces_cache
-    ? `BIENS DISPONIBLES :\n${cfg.annonces_cache}`
-    : "(aucune annonce disponible pour l'instant)";
-  const agentsRaw = cfg.agents || '';
-  let agentsTxt = '';
-  try {
-    const arr = typeof agentsRaw === 'string' ? JSON.parse(agentsRaw) : agentsRaw;
-    agentsTxt = arr.map(a => `- ${a.nom} : ${a.zones}`).join('\n');
-  } catch(e) { agentsTxt = String(agentsRaw); }
+    ? `BIENS DISPONIBLES EN CE MOMENT :\n${cfg.annonces_cache}`
+    : '(Aucune annonce en base pour l\'instant — un agent rappellera avec des biens adaptés)';
 
-  return `Tu es Sophie, l'assistante vocale de ${nom}. Tu parles EXCLUSIVEMENT en français. Jamais un seul mot en anglais.
+  // Si le client a défini un script personnalisé, on l'utilise EN PRIORITÉ ABSOLUE
+  if (cfg.scraping_format && cfg.scraping_format.trim().length > 50) {
+    return `LANGUE : Tu parles EXCLUSIVEMENT en français. Jamais en anglais. Si l'appelant parle anglais, réponds en français.
 
-══════════════════════════════════════════
-SCRIPT OBLIGATOIRE — RESPECTE L'ORDRE EXACT
-══════════════════════════════════════════
+IDENTITÉ : Tu es l'assistante vocale de ${cfg.nom_agence}. Ton rôle est UNIQUEMENT de suivre le script ci-dessous.
 
-ÉTAPE 1 — ACCUEIL (première chose que tu dis, mot pour mot) :
-"${accueil}"
-[Attends que l'appelant réponde avant de continuer]
+${cfg.scraping_format.trim()}
 
-ÉTAPE 2 — VILLE :
-Demande : "Dans quelle ville ou quel secteur recherchez-vous ?"
-[Attends la réponse]
-
-ÉTAPE 3 — BUDGET :
-Demande : "Quel est votre budget maximum ?"
-[Attends la réponse]
-
-ÉTAPE 4 — RECHERCHE DANS LES ANNONCES :
-Cherche dans la liste ci-dessous un bien qui correspond à la ville et au budget.
-→ Si tu trouves un bien : dis "J'ai un bien qui pourrait vous correspondre : [TITRE] à [VILLE] pour [PRIX] euros. Un agent vous rappellera pour plus de détails."
-→ Si aucun bien ne correspond : dis "Je n'ai pas de bien correspondant en ce moment, mais un agent vous rappellera dès qu'un bien sera disponible."
-[Attends que l'appelant réagisse si besoin, puis continue]
-
+━━ BIENS DISPONIBLES ━━
 ${annonces}
 
-ÉTAPE 5 — IDENTITÉ :
-Demande : "Pouvez-vous me donner votre prénom et votre nom ?"
-[Attends la réponse]
+━━ AGENTS PAR SECTEUR ━━
+${cfg.agents}
 
-ÉTAPE 6 — CONFIRMATION NUMÉRO :
-Dis : "Je rappelle que votre numéro est le ${callerNum||'numéro non détecté'}, c'est bien ça ?"
-→ Si oui ou silence : passe à l'étape 7
-→ Si non : demande "Quel est votre numéro de rappel ?" puis note la réponse
+━━ RÈGLES TECHNIQUES ABSOLUES ━━
+- LANGUE : uniquement le FRANÇAIS, aucune exception
+- DURÉE : l'appel ne doit pas dépasser 2 minutes — va à l'essentiel
+- UNE seule question par prise de parole
+- MAX 2 phrases par réponse
+- Ne JAMAIS improviser ou sortir du script
+- Ne JAMAIS inventer un bien immobilier
+- Après la clôture : silence total, ne réponds plus`;
+  }
 
-ÉTAPE 7 — CLÔTURE (mot pour mot, puis silence définitif) :
+  // Script par défaut si pas de script personnalisé
+  return `LANGUE : Tu parles EXCLUSIVEMENT en français. Jamais en anglais. Si l'appelant parle anglais, réponds-lui en français.
+
+IDENTITÉ : Tu es l'assistante vocale de ${cfg.nom_agence}. Tu es chaleureuse, naturelle et efficace.
+
+━━ SCRIPT OBLIGATOIRE (respecte cet ordre STRICTEMENT) ━━
+
+ÉTAPE 1 — ACCUEIL (première phrase, mot pour mot) :
+"${accueil}"
+
+ÉTAPE 2 — UN SEUL besoin à la fois :
+→ "Vous recherchez à acheter, vendre ou simplement vous renseigner ?"
+
+ÉTAPE 3 — Secteur / ville :
+→ "Dans quel secteur ou quelle ville cherchez-vous ?"
+
+ÉTAPE 4 — Identité :
+→ "Pouvez-vous me donner votre prénom et votre nom ?"
+
+⚠️ NE PAS chercher les caractéristiques précises du bien (surface, pièces, étage, budget...)
+⚠️ Ton rôle : UNIQUEMENT collecter prénom, nom, ville, besoin, numéro → transmettre à l'agent.
+
+ÉTAPE 5 — Identité :
+→ "Pouvez-vous me donner votre prénom et votre nom ?"
+
+ÉTAPE 6 — Confirmation numéro :
+→ "Je vois que vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
+
+ÉTAPE 7 — CLÔTURE (mot pour mot, puis silence) :
 "Merci pour votre appel, nous avons bien noté votre demande, l'agent commercial en charge de ce secteur va rapidement vous rappeler, merci d'avoir contacté l'agence Léone Immobilier et à très bientôt !"
-[Après cette phrase : tu ne parles plus. Silence total.]
 
-══════════════════════════════════════════
-RÈGLES ABSOLUES
-══════════════════════════════════════════
-1. UNE SEULE question par prise de parole. Jamais deux questions en même temps.
-2. Maximum 2 phrases par réponse.
-3. Tu suis les étapes DANS L'ORDRE. Tu ne sautes aucune étape.
-4. Tu ne raccroches JAMAIS avant d'avoir le nom ET la confirmation du numéro.
-5. Tu ne mentionnes JAMAIS de sites web, de plateformes, de Zillow ou autre.
-6. Tu n'inventes JAMAIS un bien immobilier qui n'est pas dans la liste.
-7. Après l'étape 7 : silence absolu, tu ne réponds plus.
+━━ BIENS DISPONIBLES ━━
+${annonces}
 
-AGENTS PAR SECTEUR :
-${agentsTxt}`;
+━━ AGENTS PAR SECTEUR ━━
+${cfg.agents}
+
+━━ RÈGLES ABSOLUES ━━
+- LANGUE : FRANÇAIS UNIQUEMENT. Jamais un mot en anglais, même si l'appelant parle anglais
+- Ne JAMAIS chercher les caractéristiques du bien (surface, pièces, étage, budget...)
+- Ne JAMAIS proposer ou commenter des annonces pendant l'appel
+- Ton SEUL rôle : collecter prénom, nom, ville, besoin, numéro → transmettre à l'agent
+- 1 question à la fois, max 2 phrases courtes par réponse
+- Après l'ÉTAPE 6 : silence total, ne réponds plus jamais`;
 }
 
 // ─── µ-law codec ─────────────────────────────────────────────────────────────
@@ -332,13 +317,12 @@ wss.on('connection', async (ws, req) => {
     });
     console.log('[LEAD] ✅', lead.nom||'Inconnu', tel, '→', ag);
 
-    // Incrémenter compteur appels client
+    // Incrémenter le compteur d'appels du client
     if (cfg && cfg.id) {
-      const newMois  = (cfg.appels_mois  || 0) + 1;
       const newTotal = (cfg.appels_total || 0) + 1;
-      b44Update('Client', cfg.id, { appels_mois: newMois, appels_total: newTotal })
-        .then(() => console.log(`[CTR] appels_mois=${newMois} total=${newTotal}`))
-        .catch(e  => console.error('[CTR] Erreur:', e.message));
+      const newMois  = (cfg.appels_mois  || 0) + 1;
+      b44Update('Client', cfg.id, { appels_total: newTotal, appels_mois: newMois });
+      console.log(`[COUNTER] appels_total:${newTotal} appels_mois:${newMois}`);
     }
 
     gmailSend(
@@ -389,12 +373,7 @@ wss.on('connection', async (ws, req) => {
   function connectOAI(callerNum) {
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
-      {
-        headers: {
-          'Authorization': `Bearer ${OPENAI_API_KEY}`,
-          'OpenAI-Beta': 'realtime=v1'
-        }
-      }
+      ['realtime', `openai-insecure-api-key.${OPENAI_API_KEY}`, 'openai-beta.realtime-v1']
     );
 
     oai.on('open', async () => {
@@ -404,18 +383,13 @@ wss.on('connection', async (ws, req) => {
       }
       console.log(`[OAI] ✅ Connecté — voice:${cfg.voix} — accueil:"${cfg.message_accueil}"`);
 
-      const forcedInstructions = `[SYSTEM OVERRIDE - MANDATORY]
-YOU MUST SPEAK FRENCH ONLY. NEVER SPEAK ENGLISH. EVERY SINGLE WORD YOU SAY MUST BE IN FRENCH.
-IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
-
-` + buildPrompt(cfg, callerNum);
-
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
           modalities: ['text', 'audio'],
-          instructions: forcedInstructions,
+          instructions: buildPrompt(cfg, callerNum),
           voice: cfg.voix || 'shimmer',
+          language: 'fr',
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',
           input_audio_transcription: { model: 'whisper-1', language: 'fr' },
@@ -425,8 +399,8 @@ IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
             prefix_padding_ms: 300,
             silence_duration_ms: 700
           },
-          temperature: 0.4,
-          max_response_output_tokens: 120,
+          temperature: 0.2,            // ultra-strict
+          max_response_output_tokens: 120, // ↓ réponses plus courtes
         }
       }));
     });
@@ -438,16 +412,6 @@ IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
         if ((m.type==='session.created' || m.type==='session.updated') && !ready) {
           ready = true;
           console.log('[OAI] Session prête → déclenchement réponse initiale');
-          // Injecter le message d'accueil en français directement
-          const accueilMsg = (cfg && cfg.message_accueil) ? cfg.message_accueil : 'Bonjour, agence Leone Immobilier, comment puis-je vous aider ?';
-          oai.send(JSON.stringify({
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'user',
-              content: [{ type: 'input_text', text: '[DÉBUT APPEL - réponds UNIQUEMENT en FRANÇAIS avec exactement ce message d accueil: ' + accueilMsg + ']' }]
-            }
-          }));
           oai.send(JSON.stringify({ type: 'response.create' }));
           for (const c of queue) oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
           queue.length = 0;
@@ -461,29 +425,12 @@ IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
             ws.send(JSON.stringify({ event:'media', streamSid, media:{ payload: Buffer.from(ulaw).toString('base64') } }));
         }
 
-        // Debug: logger les types de messages non gérés
-        if (!['response.audio.delta','input_audio_buffer.speech_started','input_audio_buffer.speech_stopped',
-              'input_audio_buffer.committed','response.audio.done','rate_limits.updated',
-              'response.output_item.added','response.output_item.done','response.content_part.added',
-              'response.content_part.done','response.created','response.output_item.added',
-              'session.created','session.updated','response.audio_transcript.delta',
-              'response.audio_transcript.done','conversation.item.input_audio_transcription.completed',
-              'conversation.item.created','response.done','error'].includes(m.type)) {
-          console.log('[OAI-EVT]', m.type, JSON.stringify(m).slice(0,100));
-        }
-        if (m.type === 'error') console.error('[OAI-ERR]', JSON.stringify(m).slice(0,300));
-
         if (m.type==='response.audio_transcript.delta' && m.delta) curAss += m.delta;
 
         if (m.type==='response.audio_transcript.done' && curAss) {
           transcript.push({ r:'a', t:curAss });
           console.log(`[IA] "${curAss.slice(0,120)}"`);
           curAss = '';
-        }
-
-        // Aussi essayer input_audio_transcription.delta
-        if (m.type==='conversation.item.input_audio_transcription.delta' && m.delta) {
-          console.log('[Client-delta]', m.delta?.slice(0,80));
         }
 
         if (m.type==='conversation.item.input_audio_transcription.completed' && m.transcript) {
@@ -596,4 +543,4 @@ IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
 });
 
 const PORT = process.env.PORT || 80;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v4 listening on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v11 listening on port ${PORT}`));
