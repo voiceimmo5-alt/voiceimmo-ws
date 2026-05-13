@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: "v7-script-final", service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: "v8-counter-disco", service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -309,6 +309,15 @@ wss.on('connection', async (ws, req) => {
     });
     console.log('[LEAD] ✅', lead.nom||'Inconnu', tel, '→', ag);
 
+    // Incrémenter compteur appels client
+    if (cfg && cfg.id) {
+      const newMois  = (cfg.appels_mois  || 0) + 1;
+      const newTotal = (cfg.appels_total || 0) + 1;
+      b44Update('Client', cfg.id, { appels_mois: newMois, appels_total: newTotal })
+        .then(() => console.log(`[CTR] appels_mois=${newMois} total=${newTotal}`))
+        .catch(e  => console.error('[CTR] Erreur:', e.message));
+    }
+
     gmailSend(
       cfg.destinataires_email,
       `🏠 Lead → ${ag} | ${tel} | ${lead.besoin||'?'} | ${lead.ville||'?'}`,
@@ -424,12 +433,29 @@ IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
             ws.send(JSON.stringify({ event:'media', streamSid, media:{ payload: Buffer.from(ulaw).toString('base64') } }));
         }
 
+        // Debug: logger les types de messages non gérés
+        if (!['response.audio.delta','input_audio_buffer.speech_started','input_audio_buffer.speech_stopped',
+              'input_audio_buffer.committed','response.audio.done','rate_limits.updated',
+              'response.output_item.added','response.output_item.done','response.content_part.added',
+              'response.content_part.done','response.created','response.output_item.added',
+              'session.created','session.updated','response.audio_transcript.delta',
+              'response.audio_transcript.done','conversation.item.input_audio_transcription.completed',
+              'conversation.item.created','response.done','error'].includes(m.type)) {
+          console.log('[OAI-EVT]', m.type, JSON.stringify(m).slice(0,100));
+        }
+        if (m.type === 'error') console.error('[OAI-ERR]', JSON.stringify(m).slice(0,300));
+
         if (m.type==='response.audio_transcript.delta' && m.delta) curAss += m.delta;
 
         if (m.type==='response.audio_transcript.done' && curAss) {
           transcript.push({ r:'a', t:curAss });
           console.log(`[IA] "${curAss.slice(0,120)}"`);
           curAss = '';
+        }
+
+        // Aussi essayer input_audio_transcription.delta
+        if (m.type==='conversation.item.input_audio_transcription.delta' && m.delta) {
+          console.log('[Client-delta]', m.delta?.slice(0,80));
         }
 
         if (m.type==='conversation.item.input_audio_transcription.completed' && m.transcript) {
