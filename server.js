@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: "v4c-railway", service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: "v5-fr-forced", service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -372,23 +372,29 @@ wss.on('connection', async (ws, req) => {
       }
       console.log(`[OAI] ✅ Connecté — voice:${cfg.voix} — accueil:"${cfg.message_accueil}"`);
 
+      const forcedInstructions = `[SYSTEM OVERRIDE - MANDATORY]
+YOU MUST SPEAK FRENCH ONLY. NEVER SPEAK ENGLISH. EVERY SINGLE WORD YOU SAY MUST BE IN FRENCH.
+IF YOU SPEAK ENGLISH FOR ANY REASON, YOU FAIL YOUR TASK.
+
+` + buildPrompt(cfg, callerNum);
+
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
           modalities: ['text', 'audio'],
-          instructions: buildPrompt(cfg, callerNum),
+          instructions: forcedInstructions,
           voice: cfg.voix || 'shimmer',
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',
-          input_audio_transcription: { model: 'whisper-1' },
+          input_audio_transcription: { model: 'whisper-1', language: 'fr' },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.5,
             prefix_padding_ms: 300,
             silence_duration_ms: 700
           },
-          temperature: 0.4,            // ↓ réduit les improvisations
-          max_response_output_tokens: 120, // ↓ réponses plus courtes
+          temperature: 0.4,
+          max_response_output_tokens: 120,
         }
       }));
     });
@@ -400,6 +406,16 @@ wss.on('connection', async (ws, req) => {
         if ((m.type==='session.created' || m.type==='session.updated') && !ready) {
           ready = true;
           console.log('[OAI] Session prête → déclenchement réponse initiale');
+          // Injecter le message d'accueil en français directement
+          const accueilMsg = (cfg && cfg.message_accueil) ? cfg.message_accueil : 'Bonjour, agence Leone Immobilier, comment puis-je vous aider ?';
+          oai.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: '[DÉBUT APPEL - réponds UNIQUEMENT en FRANÇAIS avec exactement ce message d accueil: ' + accueilMsg + ']' }]
+            }
+          }));
           oai.send(JSON.stringify({ type: 'response.create' }));
           for (const c of queue) oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
           queue.length = 0;
