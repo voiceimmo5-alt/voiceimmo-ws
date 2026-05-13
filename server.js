@@ -10,6 +10,20 @@ const wss    = new WebSocketServer({ server });
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+
+// ─── Buffer de logs circulaire (100 dernières lignes) ────────────────────────
+const LOG_BUFFER = [];
+const MAX_LOGS = 100;
+const origConsoleLog = console.log;
+const origConsoleError = console.error;
+function pushLog(level, args) {
+  const line = { ts: Date.now(), level, msg: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') };
+  LOG_BUFFER.push(line);
+  if (LOG_BUFFER.length > MAX_LOGS) LOG_BUFFER.shift();
+}
+console.log   = (...a) => { origConsoleLog(...a);   pushLog('info',  a); };
+console.error = (...a) => { origConsoleError(...a); pushLog('error', a); };
+
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 const BASE44_SERVICE_TOKEN = process.env.BASE44_SERVICE_TOKEN || '';
 const BASE44_API_URL     = process.env.BASE44_API_URL || 'https://fr-2758ee0c.base44.app';
@@ -131,6 +145,31 @@ app.get('/debug', async (req, res) => {
     oaiOk = r.ok;
   } catch(_) {}
   res.json({ version: 'v25-clean', hasOAI: hasKey, oaiOk, node: process.version });
+});
+
+app.get('/logs', (req, res) => {
+  const n = parseInt(req.query.n || '50');
+  const since = parseInt(req.query.since || '0');
+  const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
+  res.json({ logs, serverTime: Date.now(), version: 'v25-clean' });
+});
+
+app.get('/stats', async (req, res) => {
+  let oaiOk = false;
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
+    oaiOk = r.ok;
+  } catch(_) {}
+  res.json({
+    ok: true,
+    version: 'v25-clean',
+    uptime: Math.floor(process.uptime()),
+    memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+    oaiOk,
+    node: process.version,
+    serverTime: Date.now(),
+    activeConnections: wss.clients.size,
+  });
 });
 
 app.post('/twiml', (req, res) => {
