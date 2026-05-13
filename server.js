@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: "v8-counter-disco", service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: "v9-realtime-ga", service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -366,7 +366,12 @@ wss.on('connection', async (ws, req) => {
   function connectOAI(callerNum) {
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
-      ['realtime', `openai-insecure-api-key.${OPENAI_API_KEY}`, 'openai-beta.realtime-v1']
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'realtime=v1'
+        }
+      }
     );
 
     oai.on('open', async () => {
