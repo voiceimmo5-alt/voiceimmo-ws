@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v11-strict', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v12-stable', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -247,13 +247,10 @@ IDENTITÉ : Tu es l'assistante vocale de ${cfg.nom_agence}. Tu es chaleureuse, n
 ⚠️ NE PAS chercher les caractéristiques précises du bien (surface, pièces, étage, budget...)
 ⚠️ Ton rôle : UNIQUEMENT collecter prénom, nom, ville, besoin, numéro → transmettre à l'agent.
 
-ÉTAPE 5 — Identité :
-→ "Pouvez-vous me donner votre prénom et votre nom ?"
-
-ÉTAPE 6 — Confirmation numéro :
+ÉTAPE 5 — Confirmation numéro :
 → "Je vois que vous appelez depuis le ${callerNum||'numéro non détecté'}, c'est bien votre numéro de rappel ?"
 
-ÉTAPE 7 — CLÔTURE (mot pour mot, puis silence) :
+ÉTAPE 6 — CLÔTURE (mot pour mot, puis silence) :
 "Merci pour votre appel, nous avons bien noté votre demande, l'agent commercial en charge de ce secteur va rapidement vous rappeler, merci d'avoir contacté l'agence Léone Immobilier et à très bientôt !"
 
 ━━ BIENS DISPONIBLES ━━
@@ -389,7 +386,6 @@ wss.on('connection', async (ws, req) => {
           modalities: ['text', 'audio'],
           instructions: buildPrompt(cfg, callerNum),
           voice: cfg.voix || 'shimmer',
-          language: 'fr',
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',
           input_audio_transcription: { model: 'whisper-1', language: 'fr' },
@@ -409,9 +405,19 @@ wss.on('connection', async (ws, req) => {
       try {
         const m = JSON.parse(data);
 
-        if ((m.type==='session.created' || m.type==='session.updated') && !ready) {
+        if (m.type==='session.updated' && !ready) {
           ready = true;
-          console.log('[OAI] Session prête → déclenchement réponse initiale');
+          console.log('[OAI] Session prête → déclenchement réponse initiale en FR');
+          // Injecter un message système pour forcer la langue FR avant la première réponse
+          const accueilMsg = (cfg && cfg.message_accueil) ? cfg.message_accueil : 'Bonjour, comment puis-je vous aider ?';
+          oai.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'system',
+              content: [{ type: 'input_text', text: `INSTRUCTION ABSOLUE : Tu dois OBLIGATOIREMENT parler en français. Ta première phrase est exactement : "${accueilMsg}" — Dis cette phrase maintenant.` }]
+            }
+          }));
           oai.send(JSON.stringify({ type: 'response.create' }));
           for (const c of queue) oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
           queue.length = 0;
@@ -543,4 +549,4 @@ wss.on('connection', async (ws, req) => {
 });
 
 const PORT = process.env.PORT || 80;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v11 listening on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v12 listening on port ${PORT}`));
