@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v12-stable', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v13-api-fixed', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -59,9 +59,10 @@ app.post('/twiml', (req, res) => {
 // ─── Helpers Base44 ───────────────────────────────────────────────────────────
 async function b44List(entity) {
   try {
-    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
-      headers: { 'x-api-key': BASE44_API_KEY, Accept: 'application/json' }
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
+      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, Accept: 'application/json' }
     });
+    if (!r.ok) { console.error(`[B44] list ${entity} HTTP:${r.status}`); return []; }
     const d = await r.json();
     return Array.isArray(d) ? d : (d.records || []);
   } catch(e) { console.error(`[B44] ${entity}:`, e.message); return []; }
@@ -69,31 +70,32 @@ async function b44List(entity) {
 
 async function b44Create(entity, data) {
   try {
-    await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/`, {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}`, {
       method: 'POST',
-      headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
+    if (!r.ok) console.error(`[B44] create ${entity} HTTP:${r.status}`);
   } catch(e) { console.error(`[B44] create ${entity}:`, e.message); }
 }
 
 async function b44Update(entity, id, data) {
   try {
-    const r = await fetch(`https://api.base44.com/api/apps/${APP_ID}/entities/${entity}/${id}/`, {
+    const r = await fetch(`https://fr-2758ee0c.base44.app/api/entities/${entity}/${id}`, {
       method: 'PATCH',
-      headers: { 'x-api-key': BASE44_API_KEY, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${BASE44_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    const d = await r.json();
-    if (!r.ok) console.error(`[B44] update ${entity}:`, JSON.stringify(d));
+    if (!r.ok) console.error(`[B44] update ${entity} HTTP:${r.status}`);
   } catch(e) { console.error(`[B44] update ${entity}:`, e.message); }
 }
 
 async function gmailSend(toAddr, subject, body) {
   try {
-    const tr = await fetch(`https://api.base44.com/api/apps/${APP_ID}/connectors/gmail/token`, {
-      headers: { 'x-api-key': BASE44_API_KEY }
+    const tr = await fetch(`https://fr-2758ee0c.base44.app/api/connectors/gmail/token`, {
+      headers: { Authorization: `Bearer ${BASE44_API_KEY}` }
     });
+    if (!tr.ok) { console.error(`[EMAIL] Token error HTTP:${tr.status}`); return; }
     const { access_token } = await tr.json();
     const msg = [
       `From: Voxzen VoiceImmo <contact@voxzen.io>`,
@@ -549,4 +551,4 @@ wss.on('connection', async (ws, req) => {
 });
 
 const PORT = process.env.PORT || 80;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v12 listening on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v13 listening on port ${PORT}`));
