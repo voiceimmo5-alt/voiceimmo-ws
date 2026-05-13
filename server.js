@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v21-init-fix', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v22-diag', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -54,6 +54,44 @@ app.get('/debug', async (req, res) => {
     oaiOk = r.ok;
   } catch(e) {}
   res.json({ hasOAI, hasB44, b44Ok, oaiOk, node: process.version });
+});
+
+// ─── Endpoint diagnostic WebSocket OAI ──────────────────────────────────────
+app.get('/test-oai', async (req, res) => {
+  const result = { step: 'init', error: null };
+  try {
+    const apiKey = process.env.OPENAI_API_KEY || '';
+    if (!apiKey) { res.json({ ok: false, error: 'No OPENAI_API_KEY' }); return; }
+    
+    result.step = 'connecting';
+    const ws = new WebSocket(
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      ['realtime'],
+      { headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'realtime=v1' } }
+    );
+    
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => { ws.close(); reject(new Error('timeout 8s')); }, 8000);
+      ws.on('open', () => { result.step = 'open'; });
+      ws.on('message', (data) => {
+        try {
+          const m = JSON.parse(data);
+          result.step = m.type;
+          if (m.type === 'session.created') {
+            clearTimeout(t);
+            ws.close();
+            resolve();
+          }
+          if (m.type === 'error') { clearTimeout(t); reject(new Error(JSON.stringify(m.error))); }
+        } catch(e) {}
+      });
+      ws.on('error', (e) => { clearTimeout(t); reject(e); });
+    });
+    
+    res.json({ ok: true, step: result.step });
+  } catch(e) {
+    res.json({ ok: false, step: result.step, error: e.message });
+  }
 });
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -622,4 +660,4 @@ wss.on('connection', async (ws, req) => {
 });
 
 const PORT = process.env.PORT || 80;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v20 listening on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v22 listening on port ${PORT}`));
