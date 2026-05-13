@@ -30,8 +30,28 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v16-g711', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v16-g711-debug', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
+// Debug endpoint
+app.get('/debug', async (req, res) => {
+  const hasOAI = !!process.env.OPENAI_API_KEY;
+  const hasB44 = !!process.env.BASE44_SERVICE_TOKEN;
+  let b44Ok = false, oaiOk = false;
+  try {
+    const r = await fetch('https://fr-2758ee0c.base44.app/api/entities/Client', {
+      headers: { Authorization: `Bearer ${process.env.BASE44_SERVICE_TOKEN}` }
+    });
+    b44Ok = r.ok;
+  } catch(e) {}
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+    });
+    oaiOk = r.ok;
+  } catch(e) {}
+  res.json({ hasOAI, hasB44, b44Ok, oaiOk, node: process.version });
+});
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
 app.post('/twiml', (req, res) => {
