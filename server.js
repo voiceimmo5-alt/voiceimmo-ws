@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v22-diag', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v23-testcall', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -91,6 +91,78 @@ app.get('/test-oai', async (req, res) => {
     res.json({ ok: true, step: result.step });
   } catch(e) {
     res.json({ ok: false, step: result.step, error: e.message });
+  }
+});
+
+// ─── Endpoint test appel complet ─────────────────────────────────────────────
+app.get('/test-call', async (req, res) => {
+  const events = [];
+  const apiKey = process.env.OPENAI_API_KEY || '';
+  try {
+    const oaiWs = new WebSocket(
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      ['realtime'],
+      { headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'realtime=v1' } }
+    );
+    
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => { oaiWs.close(); resolve(); }, 20000);
+      let audioChunks = 0;
+      
+      oaiWs.on('open', () => {
+        events.push('oai:open');
+        // session.update
+        oaiWs.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            modalities: ['text','audio'],
+            instructions: 'Dis bonjour en français.',
+            voice: 'coral',
+            input_audio_format: 'g711_ulaw',
+            output_audio_format: 'g711_ulaw',
+            turn_detection: { type:'server_vad', threshold:0.5, silence_duration_ms:700 },
+            temperature: 0.7
+          }
+        }));
+        events.push('session.update:sent');
+      });
+      
+      oaiWs.on('message', (data) => {
+        const m = JSON.parse(data);
+        events.push(m.type);
+        
+        if (m.type === 'session.updated') {
+          // response.create
+          oaiWs.send(JSON.stringify({
+            type: 'response.create',
+            response: { modalities:['text','audio'], instructions:'Dis: "Bonjour et bienvenue à l agence Leone Immobilier"' }
+          }));
+          events.push('response.create:sent');
+        }
+        if (m.type === 'response.audio.delta') {
+          audioChunks++;
+          if (audioChunks === 1) events.push('AUDIO_FIRST_CHUNK');
+        }
+        if (m.type === 'response.done') {
+          events.push(`audio_total:${audioChunks}`);
+          clearTimeout(t);
+          oaiWs.close();
+          resolve();
+        }
+        if (m.type === 'error') {
+          events.push('ERROR:' + JSON.stringify(m.error));
+          clearTimeout(t);
+          oaiWs.close();
+          resolve();
+        }
+      });
+      oaiWs.on('error', (e) => { events.push('WS_ERROR:'+e.message); resolve(); });
+    });
+    
+    const hasAudio = events.includes('AUDIO_FIRST_CHUNK');
+    res.json({ ok: hasAudio, events });
+  } catch(e) {
+    res.json({ ok: false, error: e.message, events });
   }
 });
 
