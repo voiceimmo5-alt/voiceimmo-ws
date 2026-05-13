@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v19-bridge', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v20-oai-fix', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // Debug endpoint
@@ -439,7 +439,13 @@ wss.on('connection', async (ws, req) => {
   function connectOAI(callerNum) {
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
-      ['realtime', `openai-insecure-api-key.${OPENAI_API_KEY}`, 'openai-beta.realtime-v1']
+      ['realtime'],
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'realtime=v1'
+        }
+      }
     );
 
     oai.on('open', async () => {
@@ -615,4 +621,4 @@ wss.on('connection', async (ws, req) => {
 });
 
 const PORT = process.env.PORT || 80;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v13 listening on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v20 listening on port ${PORT}`));
