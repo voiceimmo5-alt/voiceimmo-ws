@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v13-api-fixed', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v14-fix-role', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 // ─── TwiML endpoint ───────────────────────────────────────────────────────────
@@ -416,8 +416,8 @@ wss.on('connection', async (ws, req) => {
             type: 'conversation.item.create',
             item: {
               type: 'message',
-              role: 'system',
-              content: [{ type: 'input_text', text: `INSTRUCTION ABSOLUE : Tu dois OBLIGATOIREMENT parler en français. Ta première phrase est exactement : "${accueilMsg}" — Dis cette phrase maintenant.` }]
+              role: 'user',
+              content: [{ type: 'input_text', text: 'Bonjour' }]
             }
           }));
           oai.send(JSON.stringify({ type: 'response.create' }));
