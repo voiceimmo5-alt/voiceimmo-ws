@@ -254,30 +254,42 @@ wss.on('connection', (ws, req) => {
 
   // ─── Connecter OpenAI Realtime ──────────────────────────────────────────
   function connectOAI(callerNum) {
-    console.log('[OAI] Connexion OpenAI Realtime...');
-    // Connexion OpenAI Realtime — SANS header OpenAI-Beta (déprécié depuis mai 2026)
+    console.log('[OAI] Connexion OpenAI Realtime (nouveau format API mai 2026)...');
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
 
     oai.on('open', () => {
-      console.log('[OAI] Connecté → session.update');
+      console.log('[OAI] Connecté → session.update (format 2026)');
       const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
       const voix    = cfg?.voix || 'coral';
 
+      // FORMAT API OPENAI 2026 — nouveau schema session
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          modalities: ['text', 'audio'],
+          type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
-          voice: voix,
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1', language: 'fr' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
+          output_modalities: ['audio'],
+          audio: {
+            input: {
+              format: { type: 'audio/pcmu' },
+              turn_detection: {
+                type: 'server_vad',
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 800
+              },
+              transcription: { model: 'whisper-1', language: 'fr' }
+            },
+            output: {
+              format: { type: 'audio/pcmu' },
+              voice: voix
+            }
+          },
+          max_output_tokens: 300,
           temperature: 0.7,
-          max_response_output_tokens: 200,
         }
       }));
     });
@@ -286,6 +298,7 @@ wss.on('connection', (ws, req) => {
       let m;
       try { m = JSON.parse(data); } catch(_) { return; }
 
+      // Session prête → drainer queue + forcer accueil
       if (m.type === 'session.updated' && !ready) {
         ready = true;
         const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
@@ -301,15 +314,16 @@ wss.on('connection', (ws, req) => {
         oai.send(JSON.stringify({
           type: 'response.create',
           response: {
-            modalities: ['text', 'audio'],
+            output_modalities: ['audio'],
             instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"`,
           }
         }));
       }
 
-      // Audio généré par OAI → renvoyer à Twilio
-      if (m.type === 'response.audio.delta' && m.delta && streamSid) {
-        if (ws.readyState === 1) { // 1 = OPEN
+      // ── Audio généré par OAI → renvoyer à Twilio ──
+      // NOUVEAU FORMAT 2026 : response.output_audio.delta (pas response.audio.delta)
+      if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        if (ws.readyState === 1) {
           ws.send(JSON.stringify({
             event: 'media',
             streamSid,
@@ -318,61 +332,49 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      // Transcription réponse Sophie
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
-      if (m.type === 'response.audio_transcript.done' && curAss) {
+      // Transcription réponse Sophie (nouveau format 2026)
+      if (m.type === 'response.output_audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.output_audio_transcript.done' && curAss) {
         transcript.push({ r: 'a', t: curAss });
         console.log(`[IA] "${curAss.slice(0, 100)}"`);
         curAss = '';
       }
 
-      // Transcription appelant
-      if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
-        transcript.push({ r: 'u', t: m.transcript });
-        console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
-        parseLeadInfo(m.transcript);
+      // Transcription utilisateur (nouveau format 2026)
+      if (m.type === 'conversation.item.input_audio_transcription.completed') {
+        const txt = m.transcript?.trim();
+        if (txt) {
+          transcript.push({ r: 'u', t: txt });
+          console.log(`[USER] "${txt.slice(0, 100)}"`);
+          // Extraire infos lead depuis le transcript
+          extractLead(txt, lead, cfg);
+        }
+      }
+
+      // Fin de réponse
+      if (m.type === 'response.done') {
+        console.log('[OAI] response.done');
+        // Vérifier si le lead doit être sauvegardé (phrase de fin détectée)
+        if (!saved && lead.tel && lead.nom && transcript.length > 4) {
+          const lastAssistant = transcript.filter(t => t.r === 'a').pop();
+          if (lastAssistant && /au revoir|bonne journée|rappeler rapidement/i.test(lastAssistant.t)) {
+            flush();
+          }
+        }
       }
 
       if (m.type === 'error') {
-        console.error('[OAI] Erreur:', JSON.stringify(m.error));
+        console.error('[OAI] ERREUR:', JSON.stringify(m.error));
       }
     });
 
-    oai.on('error', (e) => console.error('[OAI] WS Error:', e.message));
-    oai.on('close', (code) => console.log('[OAI] Fermé, code:', code));
+    oai.on('error', (e) => console.error('[OAI] WS error:', e.message));
+    oai.on('close', (code, reason) => {
+      console.log(`[OAI] Fermé: ${code} ${reason}`);
+      if (!saved) flush();
+    });
   }
 
-  // ─── Parser les infos du lead depuis la transcription ──────────────────
-  function parseLeadInfo(text) {
-    const t = text.toLowerCase();
-    // Basique — le vrai parsing est fait par le LLM dans le transcript
-    if (!lead.nom && /je m.appelle|c.est |mon nom est/i.test(t)) {
-      const m = text.match(/(?:je m.appelle|c.est|mon nom est)\s+([A-ZÀ-Ý][a-zà-ý]+(?:\s+[A-ZÀ-Ý][a-zà-ý]+)*)/i);
-      if (m) lead.nom = m[1];
-    }
-  }
-
-  // ─── Prompt Sophie ────────────────────────────────────────────────────────
-  function buildPrompt(c, callerNum) {
-    const agentsStr = (c.agents_arr||[]).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
-    return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
-LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
-RÈGLES ABSOLUES :
-- Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
-- Tu ne donnes pas de conseils juridiques ou financiers
-- Tu collectes les informations suivantes dans cet ordre :
-  1. Ville / secteur du bien
-  2. Budget
-  3. Prénom et nom de l'appelant
-  4. Confirmer le numéro (${callerNum})
-- Après collecte : "Merci, un agent va vous rappeler rapidement. Au revoir !"
-
-AGENTS ET ZONES :
-${agentsStr}
-
-Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
-Numéro de l'appelant : ${callerNum}`;
-  }
 
   // ─── Handler messages Twilio ──────────────────────────────────────────────
   ws.on('message', async (data) => {
