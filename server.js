@@ -173,7 +173,7 @@ app.get('/stats', async (req, res) => {
 });
 
 app.get('/version', (req, res) => {
-  res.json({ version: 'v26-fixed', serverUrl: process.env.SERVER_URL || 'auto', env: process.env.NODE_ENV });
+  res.json({ version: 'v28-ws-fix', serverUrl: process.env.SERVER_URL || 'auto', env: process.env.NODE_ENV });
 });
 
 app.post('/twiml', (req, res) => {
@@ -257,6 +257,7 @@ wss.on('connection', (ws, req) => {
     console.log('[OAI] Connexion OpenAI Realtime (nouveau format API mai 2026)...');
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      [],
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
 
