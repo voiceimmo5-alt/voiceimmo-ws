@@ -172,16 +172,23 @@ app.get('/stats', async (req, res) => {
   });
 });
 
+app.get('/version', (req, res) => {
+  res.json({ version: 'v26-fixed', serverUrl: process.env.SERVER_URL || 'auto', env: process.env.NODE_ENV });
+});
+
 app.post('/twiml', (req, res) => {
   const caller = req.body.From || req.body.Caller || '';
   const to     = req.body.To   || req.body.Called || '';
   const sid    = req.body.CallSid || '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
 
-  // Utiliser SERVER_URL (variable d'env Railway) pour que l'URL soit toujours correcte
-  const serverUrl = process.env.SERVER_URL || 'ws.voiceimmo.fr';
+  // SERVER_URL depuis env (Railway Variables) — fallback selon le numéro appelé
+  const envUrl = process.env.SERVER_URL;
+  const toClean = (to || '').replace(/\s/g,'');
+  const isProd = toClean === '+33939245959';
+  const serverUrl = envUrl || (isProd ? 'ws.voiceimmo.fr' : 'ws-staging.voiceimmo.fr');
   const wsUrl = `wss://${serverUrl}`;
-  console.log(`[TWIML] wsUrl: ${wsUrl}`);
+  console.log(`[TWIML] wsUrl: ${wsUrl} (SERVER_URL env: ${envUrl||'non défini, fallback auto'})`);
 
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
