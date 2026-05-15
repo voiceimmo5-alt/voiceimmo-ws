@@ -182,13 +182,29 @@ app.post('/twiml', (req, res) => {
   const sid    = req.body.CallSid || '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
 
-  // SERVER_URL depuis env (Railway Variables) — fallback selon le numéro appelé
+  // Détection automatique du bon host WebSocket :
+  // 1. Variable SERVER_URL si définie (priorité)
+  // 2. Sinon : détection depuis le Host header de la requête Twilio
+  // 3. Sinon : fallback selon le numéro appelé
   const envUrl = process.env.SERVER_URL;
+  const reqHost = req.headers['host'] || req.headers['x-forwarded-host'] || '';
   const toClean = (to || '').replace(/\s/g,'');
   const isProd = toClean === '+33939245959';
-  const serverUrl = envUrl || (isProd ? 'ws.voiceimmo.fr' : 'ws-staging.voiceimmo.fr');
+  
+  let serverUrl;
+  if (envUrl && !envUrl.includes('railway.app')) {
+    // SERVER_URL défini ET c'est un vrai custom domain
+    serverUrl = envUrl;
+  } else if (reqHost && !reqHost.includes('railway.app')) {
+    // Le host de la requête est un custom domain — utiliser le même
+    serverUrl = reqHost.replace(/:\d+$/, ''); // enlever le port si présent
+  } else {
+    // Fallback hardcodé selon le numéro
+    serverUrl = isProd ? 'ws.voiceimmo.fr' : 'ws-staging.voiceimmo.fr';
+  }
+  
   const wsUrl = `wss://${serverUrl}`;
-  console.log(`[TWIML] wsUrl: ${wsUrl} (SERVER_URL env: ${envUrl||'non défini, fallback auto'})`);
+  console.log(`[TWIML] wsUrl: ${wsUrl} (host:${reqHost} env:${envUrl||'vide'} to:${toClean})`);
 
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
