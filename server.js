@@ -134,7 +134,7 @@ async function sendEmail(lead, cfg) {
 }
 
 // ─── Endpoints HTTP ───────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v25-clean', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v29-oai-fix', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -144,14 +144,14 @@ app.get('/debug', async (req, res) => {
     const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
     oaiOk = r.ok;
   } catch(_) {}
-  res.json({ version: 'v25-clean', hasOAI: hasKey, oaiOk, node: process.version });
+  res.json({ version: 'v29-oai-fix', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
   const n = parseInt(req.query.n || '50');
   const since = parseInt(req.query.since || '0');
   const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
-  res.json({ logs, serverTime: Date.now(), version: 'v25-clean' });
+  res.json({ logs, serverTime: Date.now(), version: 'v29-oai-fix' });
 });
 
 app.get('/stats', async (req, res) => {
@@ -162,7 +162,7 @@ app.get('/stats', async (req, res) => {
   } catch(_) {}
   res.json({
     ok: true,
-    version: 'v25-clean',
+    version: 'v29-oai-fix',
     uptime: Math.floor(process.uptime()),
     memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     oaiOk,
@@ -173,7 +173,7 @@ app.get('/stats', async (req, res) => {
 });
 
 app.get('/version', (req, res) => {
-  res.json({ version: 'v28-ws-fix', serverUrl: process.env.SERVER_URL || 'auto', env: process.env.NODE_ENV });
+  res.json({ version: 'v29-oai-fix', serverUrl: process.env.SERVER_URL || 'auto', env: process.env.NODE_ENV });
 });
 
 app.post('/twiml', (req, res) => {
@@ -272,7 +272,6 @@ wss.on('connection', (ws, req) => {
         session: {
           type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
-          output_modalities: ['audio'],
           audio: {
             input: {
               format: { type: 'audio/pcmu' },
@@ -290,7 +289,6 @@ wss.on('connection', (ws, req) => {
             }
           },
           max_output_tokens: 300,
-          temperature: 0.7,
         }
       }));
     });
