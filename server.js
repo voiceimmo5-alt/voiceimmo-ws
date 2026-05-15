@@ -255,10 +255,10 @@ wss.on('connection', (ws, req) => {
   // ─── Connecter OpenAI Realtime ──────────────────────────────────────────
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
+    // Connexion OpenAI Realtime — SANS header OpenAI-Beta (déprécié depuis mai 2026)
     oai = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
-      ['realtime'],
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
 
     oai.on('open', () => {
