@@ -178,11 +178,16 @@ app.post('/twiml', (req, res) => {
   const sid    = req.body.CallSid || '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
 
+  // Utiliser SERVER_URL (variable d'env Railway) pour que l'URL soit toujours correcte
+  const serverUrl = process.env.SERVER_URL || 'ws.voiceimmo.fr';
+  const wsUrl = `wss://${serverUrl}`;
+  console.log(`[TWIML] wsUrl: ${wsUrl}`);
+
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://voiceimmo-ws-production.up.railway.app">
+    <Stream url="${wsUrl}">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
