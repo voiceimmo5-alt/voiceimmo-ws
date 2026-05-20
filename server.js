@@ -7,79 +7,54 @@ const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 
-const PORT            = process.env.PORT || 8080;
-const OPENAI_API_KEY  = process.env.OPENAI_API_KEY || '';
-const BASE44_SERVICE_TOKEN = process.env.BASE44_SERVICE_TOKEN || '';
-const BASE44_API_URL  = process.env.BASE44_API_URL || 'https://fr-2758ee0c.base44.app';
-const SERVER_URL      = process.env.SERVER_URL || '';
-const NODE_ENV        = process.env.NODE_ENV || 'production';
-const VERSION         = 'v33-stable';
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ─── Logger circulaire ────────────────────────────────────────────────────
+
+// ─── Buffer de logs circulaire (100 dernières lignes) ────────────────────────
 const LOG_BUFFER = [];
-function pushLog(level, ...args) {
-  const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-  LOG_BUFFER.push({ ts: Date.now(), level, msg });
-  if (LOG_BUFFER.length > 200) LOG_BUFFER.shift();
-  console[level === 'error' ? 'error' : 'log'](msg);
+const MAX_LOGS = 100;
+const origConsoleLog = console.log;
+const origConsoleError = console.error;
+function pushLog(level, args) {
+  const line = { ts: Date.now(), level, msg: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') };
+  LOG_BUFFER.push(line);
+  if (LOG_BUFFER.length > MAX_LOGS) LOG_BUFFER.shift();
 }
+console.log   = (...a) => { origConsoleLog(...a);   pushLog('info',  a); };
+console.error = (...a) => { origConsoleError(...a); pushLog('error', a); };
 
-// ─── Config fallback Leone Immobilier ────────────────────────────────────
+const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
+const BASE44_SERVICE_TOKEN = process.env.BASE44_SERVICE_TOKEN || '';
+const BASE44_API_URL     = process.env.BASE44_API_URL || 'https://fr-2758ee0c.base44.app';
+
+// ─── Config Leone Immobilier (fallback hardcodé) ──────────────────────────
 const DEF_CFG = {
   nom_agence: 'LEONE IMMOBILIER',
-  client_db_id: '6a03042d6c4e45eec21bedd5',
+  client_db_id: '6a04962d03547f6dfdbf8dea', // ID staging Leone
   voix: 'coral',
   message_accueil: "Bonjour et bienvenue à l'agence Leone immobilier, comment puis-je vous aider ?",
   agents_arr: [
-    { nom: 'Luca',  email: 'leone.immobilier@gmail.com',     zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite' },
-    { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com', zones: 'villette de vienne, vienne, roussillon' },
-    { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',  zones: 'villefontaine, nord rhone, beaujolais' }
+    { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite' },
+    { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com',  zones: 'villette de vienne, vienne, roussillon' },
+    { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',   zones: 'villefontaine, nord rhone, beaujolais' }
   ],
   destinataires_email: 'leone.immobilier@gmail.com',
   numero_actuel: '+33939245959',
 };
 
-// ─── Construire le prompt système ────────────────────────────────────────
-function buildPrompt(cfg, callerNum) {
-  const agentsDesc = (cfg.agents_arr || [])
-    .map(a => `- ${a.nom} (${a.zones || 'toutes zones'}) : ${a.email}`)
-    .join('\n');
-
-  return `Tu es Sophie, assistante vocale de ${cfg.nom_agence}. Tu parles uniquement en français, de façon chaleureuse, naturelle et TRÈS concise — comme une vraie secrétaire au téléphone.
-
-IMPORTANT : L'appelant téléphone depuis le numéro ${callerNum || 'inconnu'}. Tu connais DÉJÀ son numéro, ne le demande JAMAIS. Utilise ce numéro comme numéro de rappel par défaut.
-
-Ta mission en 4 étapes maximum :
-1. Accueillir et demander le prénom et nom de l'appelant
-2. Demander son besoin (achat, vente, location, estimation)
-3. Si besoin d'un bien : demander la ville et le prix approximatif (une seule question)
-4. Confirmer : "Parfait [Prénom], j'ai bien noté votre demande. Un agent vous rappellera très prochainement sur le ${callerNum || 'votre numéro'}. Bonne journée !"
-
-Agents et leurs zones :
-${agentsDesc}
-
-Règles ABSOLUES :
-- Maximum 3-4 échanges, sois directe et efficace
-- Ne demande JAMAIS le numéro de téléphone (tu l'as déjà)
-- Une seule question à la fois
-- Réponses courtes (1-2 phrases max)
-- Si l'appelant dit au revoir, conclus immédiatement
-- Ne propose pas de rendez-vous, dis qu'un agent rappellera`;
-}
-
 // ─── Charger config client depuis Base44 ─────────────────────────────────
 async function getConfig(numTwilio) {
   try {
-    // Utiliser la fonction saveLead (accès interne aux entités, pas de token expirant)
-    const res = await fetch(FUNC_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Voxzen-Secret': FUNC_SECRET },
-      body: JSON.stringify({ action: 'getClient', data: { numero: numTwilio } })
+    const filterStr = encodeURIComponent(JSON.stringify({numero_actuel: numTwilio}));
+    const url = `${BASE44_API_URL}/api/entities/Client?filter=${filterStr}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}` }
     });
-    if (!res.ok) throw new Error(`saveLead/getClient ${res.status}`);
-    const json = await res.json();
-    const client = json.client || null;
-    if (!client) { pushLog('info', `[CFG] Aucun client pour ${numTwilio} → fallback`); return DEF_CFG; }
+    if (!res.ok) throw new Error(`Base44 ${res.status}`);
+    const data = await res.json();
+    const client = Array.isArray(data) ? data[0] : (data.results?.[0] || null);
+    if (!client) return DEF_CFG;
 
     let agents_arr = DEF_CFG.agents_arr;
     try {
@@ -90,204 +65,193 @@ async function getConfig(numTwilio) {
     const VMAP = { coral:'coral', shimmer:'shimmer', alloy:'alloy', echo:'echo', verse:'verse', ash:'ash', sage:'sage', ballad:'ballad' };
     const voix = VMAP[(client.voix||'coral').toLowerCase()] || 'coral';
 
-    pushLog('info', `[CFG] Config chargée: ${client.nom_entreprise}`);
     return {
-      nom_agence:          client.nom_entreprise   || DEF_CFG.nom_agence,
-      client_db_id:        client.id               || DEF_CFG.client_db_id,
-      client_id:           client.client_id        || '',
+      nom_agence: client.nom_entreprise || DEF_CFG.nom_agence,
+      client_db_id: client.id || DEF_CFG.client_db_id,
       voix,
-      message_accueil:     client.message_accueil  || DEF_CFG.message_accueil,
-      instructions_ia:     client.instructions_ia  || '',
+      message_accueil: client.message_accueil || DEF_CFG.message_accueil,
       agents_arr,
       destinataires_email: client.destinataires_email || DEF_CFG.destinataires_email,
-      numero_actuel:       numTwilio,
+      numero_actuel: numTwilio,
     };
   } catch(e) {
-    pushLog('error', `[CFG] Erreur chargement config: ${e.message} → fallback`);
+    console.error('[CFG] Erreur chargement config:', e.message, '→ fallback');
     return DEF_CFG;
   }
 }
 
-// ─── Incrémenter compteur d'appels ───────────────────────────────────────
-const FUNC_URL = 'https://fr-2758ee0c.base44.app/functions/saveLead';
-const FUNC_SECRET = 'voxzen-railway-2026';
-
-async function callFunc(action, data, id) {
-  const res = await fetch(FUNC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Voxzen-Secret': FUNC_SECRET },
-    body: JSON.stringify({ action, data, id })
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`[${action}] ${res.status}: ${json.error||'?'}`);
-  return json;
-}
-
+// ─── Incrémenter compteur d'appels ────────────────────────────────────────
 async function incrAppels(clientDbId) {
-  if (!clientDbId) { pushLog('error', '[INCR] Pas de client_db_id'); return; }
   try {
-    await callFunc('incrAppels', { clientId: clientDbId });
-    pushLog('info', '[INCR] ✅ Compteur incrémenté');
-  } catch(e) { pushLog('error', '[INCR]:', e.message); }
+    const url = `${BASE44_API_URL}/api/entities/Client/${clientDbId}`;
+    // D'abord récupérer la valeur actuelle
+    const r1 = await fetch(url, { headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}` } });
+    const cur = await r1.json();
+    const nb = (cur.appels_mois || 0) + 1;
+    await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appels_mois: nb, appels_total: (cur.appels_total||0)+1 })
+    });
+    console.log(`[CFG] Appels incrémentés → ${nb}`);
+  } catch(e) { console.error('[CFG] incrAppels err:', e.message); }
 }
 
 // ─── Sauvegarder lead ─────────────────────────────────────────────────────
 async function saveLead(lead, cfg, transcript) {
+  console.log('[LEAD] Tentative sauvegarde:', JSON.stringify({nom:lead.nom, tel:lead.tel, besoin:lead.besoin}));
   try {
-    const agent = (cfg.agents_arr || []).find(a =>
-      (a.zones||'').toLowerCase().split(',').some(z =>
-        z.trim() && (lead.ville||'').toLowerCase().includes(z.trim())
-      )
-    ) || cfg.agents_arr?.[0] || { nom: 'Agence', email: cfg.destinataires_email };
-
-    const result = await callFunc('createLead', {
-      nom:             lead.nom    || 'Inconnu',
-      telephone:       lead.tel    || '',
-      besoin:          lead.besoin || '',
-      ville:           lead.ville  || '',
-      prix:            lead.prix   || '',
-      reference:       lead.ref    || '',
-      agent_initiales: agent.nom?.substring(0,2).toUpperCase() || 'AG',
-      agent_nom:       agent.nom   || 'Agence',
-      transcript
+    const url = `${BASE44_API_URL}/api/entities/Lead`;
+    const body = {
+      nom: lead.nom || 'Inconnu',
+      telephone: lead.tel || '',
+      besoin: lead.besoin || '',
+      agent_initiales: lead.agent || '',
+      agent_nom: lead.agentNom || '',
+      statut: 'nouveau',
+      notes: `client_id:${(cfg.client_id||'').toLowerCase()}\nVille: ${lead.ville||''} | Prix: ${lead.prix||''} | Ref: ${lead.ref||''}\n---\n` +
+             transcript.map(t => `${t.r==='a'?'Sophie':'Appelant'}: ${t.t}`).join('\n')
+    };
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
     });
-    pushLog('info', `[LEAD] ✅ Sauvegardé id:${result.id}`);
-    return { agent, leadId: result.id };
-  } catch(e) { pushLog('error', '[LEAD]:', e.message); return null; }
+    if (res.ok) console.log('[LEAD] ✅ Lead sauvegardé');
+    else console.error('[LEAD] Erreur save:', res.status, await res.text());
+  } catch(e) { console.error('[LEAD] Exception:', e.message); }
 }
 
-// ─── Envoyer email ────────────────────────────────────────────────────────
-async function sendEmail(leadResult, cfg, transcript) {
-  if (!leadResult) { pushLog('error', '[EMAIL] Pas de lead result'); return; }
-  const { agent, leadId } = leadResult;
-  if (!agent) { pushLog('error', '[EMAIL] Pas d\'agent'); return; }
+// ─── Envoyer email via Base44 Gmail function ──────────────────────────────
+async function sendEmail(lead, cfg) {
   try {
-    // Reconstruire les données lead pour l'email
-    // (lead est l'objet local {nom, tel, besoin, ville, prix, ref})
-    await callFunc('sendLeadEmail', {
-      lead: leadResult.leadData || {},
-      cfg,
-      agent,
-      leadId
+    const url = `${BASE44_API_URL}/functions/sendLeadEmail`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead, cfg })
     });
-    pushLog('info', `[EMAIL] ✅ Envoyé`);
-  } catch(e) { pushLog('error', '[EMAIL]:', e.message); }
+    console.log('[EMAIL] ✅ Email envoyé');
+  } catch(e) { console.error('[EMAIL] err:', e.message); }
 }
 
-// ─── Routes HTTP ─────────────────────────────────────────────────────────
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
-
-app.get('/', (req, res) => res.json({ status: 'ok', version: VERSION }));
-app.get('/version', (req, res) => res.json({ version: VERSION, serverUrl: SERVER_URL, env: NODE_ENV }));
+// ─── Endpoints HTTP ───────────────────────────────────────────────────────
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v25-clean', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
+  const hasKey = !!OPENAI_API_KEY;
   let oaiOk = false;
   try {
     const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
     oaiOk = r.ok;
   } catch(_) {}
-  res.json({ version: VERSION, hasOAI: !!OPENAI_API_KEY, oaiOk, node: process.version });
+  res.json({ version: 'v25-clean', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
   const n = parseInt(req.query.n || '50');
   const since = parseInt(req.query.since || '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: VERSION });
+  const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
+  res.json({ logs, serverTime: Date.now(), version: 'v25-clean' });
+});
+
+app.get('/stats', async (req, res) => {
+  let oaiOk = false;
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
+    oaiOk = r.ok;
+  } catch(_) {}
+  res.json({
+    ok: true,
+    version: 'v25-clean',
+    uptime: Math.floor(process.uptime()),
+    memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+    oaiOk,
+    node: process.version,
+    serverTime: Date.now(),
+    activeConnections: wss.clients.size,
+  });
 });
 
 app.post('/twiml', (req, res) => {
-  const to     = (req.body?.To || req.query?.To || '').replace(/\s/g,'');
-  const from   = (req.body?.From || req.query?.From || '');
-  const callSid = req.body?.CallSid || '';
-  const wsUrl  = SERVER_URL ? `wss://${SERVER_URL}` : `wss://${req.headers.host}`;
-  pushLog('info', `[TWIML] ${from} → ${to} | ws:${wsUrl}`);
-  res.type('text/xml');
+  const caller = req.body.From || req.body.Caller || '';
+  const to     = req.body.To   || req.body.Called || '';
+  const sid    = req.body.CallSid || '';
+  console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
+
+  res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}">
-      <Parameter name="caller" value="${from}" />
+    <Stream url="wss://voiceimmo-ws-production.up.railway.app">
+      <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
-      <Parameter name="sid" value="${callSid}" />
+      <Parameter name="sid" value="${sid}" />
     </Stream>
   </Connect>
 </Response>`);
 });
 
-// ─── WebSocket Handler ────────────────────────────────────────────────────
-wss.on('connection', (ws) => {
-  pushLog('info', '[WS] Nouvelle connexion');
+// ─── WebSocket Handler (Twilio Media Streams) ─────────────────────────────
+wss.on('connection', (ws, req) => {
+  console.log('[WS] ✅ Connexion depuis', req.socket.remoteAddress);
 
   let streamSid = '';
   let oai       = null;
   let ready     = false;
   let queue     = [];
-  let cfg       = DEF_CFG;
-  let callTimer = null;
-  let lead      = { nom:'', tel:'', besoin:'', ville:'', prix:'', ref:'' };
   let transcript = [];
-  let currentAssistantText = '';
-  let incrDone = false; // anti-double-comptage
+  let curAss    = '';
+  let lead      = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
+  let cfg       = null;
+  let saved     = false;
+  let callTimer = null;
+  let callSid = 'unknown';
 
+  // ─── Raccrocher proprement ──────────────────────────────────────────────
   function hangup() {
-    pushLog('info', '[WS] Hangup');
-    try { ws.close(); } catch(_) {}
-    try { oai?.close(); } catch(_) {}
-    if (callTimer) clearTimeout(callTimer);
+    if (callTimer) { clearTimeout(callTimer); callTimer = null; }
+    if (oai && oai.readyState === WebSocket.OPEN) oai.close();
   }
 
+  // ─── Flush lead à la fin de l'appel ────────────────────────────────────
   async function flush() {
-    if (!oai || oai.readyState !== WebSocket.OPEN) return;
-    while (queue.length) {
-      oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: queue.shift() }));
+    if (saved) return; saved = true;
+    hangup();
+    if (cfg) { // on sauvegarde même sans numéro
+      await saveLead(lead, cfg, transcript);
+      await sendEmail(lead, cfg);
+      await incrAppels(cfg.client_db_id);
     }
   }
 
+  // ─── Connecter OpenAI Realtime ──────────────────────────────────────────
   function connectOAI(callerNum) {
-    pushLog('info', '[OAI] Connexion gpt-realtime...');
+    console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
-      [],
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      ['realtime'],
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
     );
 
     oai.on('open', () => {
-      pushLog('info', '[OAI] Connecté → session.update');
-      // Utiliser le prompt personnalisé du client si défini, sinon le prompt générique
-      const prompt = (cfg.instructions_ia && cfg.instructions_ia.trim())
-        ? cfg.instructions_ia
-            .replace(/\{\{CALLER\}\}/g, callerNum || 'inconnu')
-            .replace(/\{\{AGENCE\}\}/g, cfg.nom_agence || '')
-        : buildPrompt(cfg, callerNum);
-      const voix   = cfg?.voix || 'coral';
+      console.log('[OAI] Connecté → session.update');
       const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
+      const voix    = cfg?.voix || 'coral';
 
-      // Format API gpt-realtime (nouveau schéma 2025)
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
-          instructions: prompt,
-          output_modalities: ['audio'],
-          audio: {
-            input: {
-              format: { type: 'audio/pcmu' },
-              turn_detection: {
-                type: 'server_vad',
-                threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 800
-              },
-              transcription: { model: 'whisper-1' }
-            },
-            output: {
-              format: { type: 'audio/pcmu' },
-              voice: voix
-            }
-          },
-          max_output_tokens: 300
+          modalities: ['text', 'audio'],
+          instructions: buildPrompt(cfg || DEF_CFG, callerNum),
+          voice: voix,
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          input_audio_transcription: { model: 'whisper-1', language: 'fr' },
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
+          temperature: 0.7,
+          max_response_output_tokens: 200,
         }
       }));
     });
@@ -295,196 +259,153 @@ wss.on('connection', (ws) => {
     oai.on('message', (data) => {
       let m;
       try { m = JSON.parse(data); } catch(_) { return; }
-      const t = m.type || '';
 
-      if (t === 'session.updated') {
-        pushLog('info', '[OAI] session.updated → déclenchement accueil');
+      if (m.type === 'session.updated' && !ready) {
         ready = true;
-        flush();
-
-        // Déclencher message d'accueil
         const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
+        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
+
+        // Drainer queue audio Twilio reçu avant que OAI soit prêt
+        for (const c of queue) {
+          oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
+        }
+        queue = [];
+
+        // Forcer Sophie à parler en premier
         oai.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: {
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: `Commence par dire exactement : "${accueil}"` }]
+          type: 'response.create',
+          response: {
+            modalities: ['text', 'audio'],
+            instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"`,
           }
         }));
-        oai.send(JSON.stringify({ type: 'response.create' }));
       }
 
-      // Audio vers Twilio — nouveau event gpt-realtime
-      if (t === 'response.output_audio.delta' && m.delta && streamSid) {
-        ws.send(JSON.stringify({
-          event: 'media',
-          streamSid,
-          media: { payload: m.delta }
-        }));
+      // Audio généré par OAI → renvoyer à Twilio
+      if (m.type === 'response.audio.delta' && m.delta && streamSid) {
+        if (ws.readyState === 1) { // 1 = OPEN
+          ws.send(JSON.stringify({
+            event: 'media',
+            streamSid,
+            media: { payload: m.delta }
+          }));
+        }
+      }
+
+      // Transcription réponse Sophie
+      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.audio_transcript.done' && curAss) {
+        transcript.push({ r: 'a', t: curAss });
+        console.log(`[IA] "${curAss.slice(0, 100)}"`);
+        curAss = '';
       }
 
       // Transcription appelant
-      if (t === 'conversation.item.input_audio_transcription.completed') {
-        const txt = m.transcript?.trim();
-        if (txt) {
-          pushLog('info', `[USR] ${txt}`);
-          transcript.push({ r:'u', t:txt });
-          const lo = txt.toLowerCase();
-
-          // Extraction contextuelle : regarder la dernière question de Sophie
-          const lastSophie = transcript.filter(x => x.r === 'a').pop()?.t?.toLowerCase() || '';
-          const demandaitNom  = /votre nom|vous appelez|c'est de la part/i.test(lastSophie);
-          const demandaitTel  = /num.ro|rappeler|téléphone|coordonnée/i.test(lastSophie);
-          const demandaitVille = /quelle ville|quel secteur|quelle zone|où|quelle commune/i.test(lastSophie);
-          const demandaitPrix  = /budget|prix|combien|fourchette/i.test(lastSophie);
-          const demandaitRef   = /référence|numéro d.annonce|ref/i.test(lastSophie);
-
-          // Nom : via formule OU via contexte (réponse courte après question sur le nom)
-          const nomFormule = txt.match(/(?:je m'appelle|je suis|c'est|mon nom est|prénom est)\s+([A-ZÀ-Ÿa-zéèêëàâùûîïôœçæ\- ]{2,30})/i);
-          if (nomFormule) {
-            lead.nom = nomFormule[1].trim();
-          } else if (demandaitNom && txt.length < 40 && /^[A-ZÀ-Ÿa-zéèêëàâùûîïôœçæ\- ]+$/.test(txt.trim())) {
-            // Réponse courte sans ponctuation = probablement un nom
-            lead.nom = txt.trim();
-          }
-
-          // Téléphone
-          const telM = txt.match(/(?:0|\+33)[1-9][\s.]?(?:\d[\s.]?){8}/);
-          if (telM) lead.tel = telM[0].replace(/[\s.]/g,'');
-
-          // Ville : via préposition OU via contexte
-          const villeFormule = lo.match(/(?:à|sur|dans|secteur|quartier|commune de|côté de|près de)\s+([a-zéèêëàâùûîïôœçæ\- ]{2,25})/i);
-          if (villeFormule) {
-            lead.ville = villeFormule[1].trim();
-          } else if (demandaitVille && txt.length < 30) {
-            lead.ville = txt.trim();
-          }
-
-          // Prix : montant numérique
-          const prixM = txt.match(/(\d[\d\s]*(?:\.\d+)?\s*(?:000|k|K|€|euros?|millions?)?)/i);
-          if (prixM && (demandaitPrix || /\d{3}/.test(txt))) lead.prix = prixM[1].trim();
-
-          // Référence annonce
-          const refM = txt.match(/(?:référence|ref|réf)[:\s#]+([A-Za-z0-9\-]+)/i);
-          if (refM) lead.ref = refM[1].trim();
-          else if (demandaitRef && txt.length < 20) lead.ref = txt.trim();
-        }
+      if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
+        transcript.push({ r: 'u', t: m.transcript });
+        console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
+        parseLeadInfo(m.transcript);
       }
 
-      // Transcription assistant — accumulation par réponse complète
-      if (t === 'response.output_audio_transcript.delta') {
-        if (!currentAssistantText) currentAssistantText = '';
-        currentAssistantText += (m.delta || '');
-      }
-
-      if (t === 'response.output_audio_transcript.done') {
-        const full = (m.transcript || currentAssistantText || '').trim();
-        if (full) transcript.push({ r:'a', t:full });
-        currentAssistantText = '';
-      }
-
-      if (t === 'response.done') {
-        pushLog('info', '[OAI] Réponse terminée');
-        if (currentAssistantText) {
-          const full = currentAssistantText.trim();
-          if (full) transcript.push({ r:'a', t:full });
-          currentAssistantText = '';
-        }
-        const lastA = transcript.filter(x => x.r === 'a').pop();
-        if (lastA && /au revoir|bonne journée|bonne soirée|à bientôt/i.test(lastA.t)) {
-          // Attendre que l'audio soit entièrement joué côté Twilio avant de raccrocher
-          // On estime ~100ms par mot + 2s de marge
-          const wordCount = (lastA.t.match(/\S+/g) || []).length;
-          const delay = Math.max(5000, wordCount * 120 + 2000);
-          pushLog('info', `[HANGUP] Fin détectée, raccrochage dans ${delay}ms`);
-          setTimeout(hangup, delay);
-        }
-      }
-
-      if (t === 'error') {
-        pushLog('error', '[OAI] Erreur:', JSON.stringify(m.error));
+      if (m.type === 'error') {
+        console.error('[OAI] Erreur:', JSON.stringify(m.error));
       }
     });
 
-    oai.on('error', (e) => pushLog('error', '[OAI] WS error:', e.message));
-
-    oai.on('close', (code) => {
-      pushLog('info', `[OAI] Fermé: ${code}`);
-      ready = false;
-      if (code !== 1000 && code !== 1001) { pushLog('error', '[OAI] Fermeture inattendue'); hangup(); }
-    });
+    oai.on('error', (e) => console.error('[OAI] WS Error:', e.message));
+    oai.on('close', (code) => console.log('[OAI] Fermé, code:', code));
   }
 
+  // ─── Parser les infos du lead depuis la transcription ──────────────────
+  function parseLeadInfo(text) {
+    const t = text.toLowerCase();
+    // Basique — le vrai parsing est fait par le LLM dans le transcript
+    if (!lead.nom && /je m.appelle|c.est |mon nom est/i.test(t)) {
+      const m = text.match(/(?:je m.appelle|c.est|mon nom est)\s+([A-ZÀ-Ý][a-zà-ý]+(?:\s+[A-ZÀ-Ý][a-zà-ý]+)*)/i);
+      if (m) lead.nom = m[1];
+    }
+  }
+
+  // ─── Prompt Sophie ────────────────────────────────────────────────────────
+  function buildPrompt(c, callerNum) {
+    const agentsStr = (c.agents_arr||[]).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
+    return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
+LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
+RÈGLES ABSOLUES :
+- Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
+- Tu ne donnes pas de conseils juridiques ou financiers
+- Tu collectes les informations suivantes dans cet ordre :
+  1. Ville / secteur du bien
+  2. Budget
+  3. Prénom et nom de l'appelant
+  4. Confirmer le numéro (${callerNum})
+- Après collecte : "Merci, un agent va vous rappeler rapidement. Au revoir !"
+
+AGENTS ET ZONES :
+${agentsStr}
+
+Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
+Numéro de l'appelant : ${callerNum}`;
+  }
+
+  // ─── Handler messages Twilio ──────────────────────────────────────────────
   ws.on('message', async (data) => {
     let m;
     try { m = JSON.parse(data); } catch(_) { return; }
 
-    try {
-      if (m.event === 'connected') {
-        pushLog('info', '[WS] connected');
-      }
-      else if (m.event === 'start') {
-        streamSid     = m.start?.streamSid || '';
-        const params  = m.start?.customParameters || {};
-        const caller  = params.caller || '';
-        const to      = params.to     || '';
-        pushLog('info', `[WS] START sid:${streamSid} caller:${caller} to:${to}`);
-        lead.tel = caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim();
-        cfg = await getConfig(to || '');
-        connectOAI(lead.tel);
-        callTimer = setTimeout(() => { pushLog('info', '[TIMER] 2min'); hangup(); }, 120000);
-      }
-      else if (m.event === 'media' && m.media?.payload) {
-        if (oai && oai.readyState === WebSocket.OPEN && ready) {
-          oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
-        } else {
-          queue.push(m.media.payload);
-        }
-      }
-      else if (m.event === 'stop') {
-        pushLog('info', '[WS] STOP');
-        if (lead.nom || lead.tel) {
-          const result = await saveLead(lead, cfg, transcript);
-          if (result) {
-            // Passer les données du lead pour l'email
-            result.leadData = {
-              nom:       lead.nom,
-              telephone: lead.tel,
-              besoin:    lead.besoin,
-              ville:     lead.ville,
-              prix:      lead.prix,
-              reference: lead.ref,
-              notes:     transcript.map(t => `${t.r==='u'?'👤 Appelant':'🤖 Sophie'}: ${t.t}`).join('\n')
-            };
-            await sendEmail(result, cfg, transcript);
-          }
-          if (cfg.client_db_id && !incrDone) {
-            incrDone = true;
-            await incrAppels(cfg.client_db_id);
-          }
-        }
+    if (m.event === 'connected') {
+      console.log('[WS] Event: connected');
+    }
+
+    else if (m.event === 'start') {
+      streamSid    = m.start?.streamSid || '';
+      const params = m.start?.customParameters || {};
+      // Récupérer caller depuis plusieurs sources possibles
+      const caller = params.caller || params.From || m.start?.from || '';
+      const to     = params.to     || params.To   || m.start?.to   || '';
+      callSid      = params.sid    || m.start?.callSid || '';
+
+      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to} params=${JSON.stringify(params)}`);
+
+      // Format numéro appelant pour lecture
+      lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
+
+      // Charger config client
+      cfg = await getConfig(to || '');
+      console.log(`[CFG] Config chargée: ${cfg.nom_agence}`);
+
+      // Démarrer OAI
+      connectOAI(lead.tel);
+
+      // Timer 2 minutes max
+      callTimer = setTimeout(() => {
+        console.log('[TIMER] 2min écoulées → raccrocher');
         hangup();
+      }, 120000);
+    }
+
+    else if (m.event === 'media' && m.media?.payload) {
+      const b64 = m.media.payload;
+      if (oai && oai.readyState === WebSocket.OPEN && ready) {
+        oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
+      } else if (oai) {
+        queue.push(b64);
       }
-    } catch(err) {
-      pushLog('error', '[WS] Handler error:', err.message);
+    }
+
+    else if (m.event === 'stop') {
+      console.log(`[WS] STOP — ${transcript.length} échanges`);
+      await flush();
     }
   });
 
   ws.on('close', async () => {
-    pushLog('info', '[WS] Client déconnecté');
-    if (callTimer) clearTimeout(callTimer);
-    try { oai?.close(); } catch(_) {}
-    // Comptage si raccrochage brutal (pas de stop reçu)
-    if (!incrDone && cfg && cfg.client_db_id) {
-      incrDone = true;
-      try { await incrAppels(cfg.client_db_id); pushLog('info', '[INCR] Comptage raccrochage brutal'); } catch(_) {}
-    }
+    console.log('[WS] Connexion fermée');
+    await flush();
   });
 
-  ws.on('error', (e) => pushLog('error', '[WS] Erreur:', e.message));
+  ws.on('error', (e) => console.error('[WS] Erreur:', e.message));
 });
 
-server.listen(PORT, () => {
-  pushLog('info', `[START] VoiceImmo WS ${VERSION} sur port ${PORT} (env:${NODE_ENV})`);
-});
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v25-clean sur port ${PORT}`));
