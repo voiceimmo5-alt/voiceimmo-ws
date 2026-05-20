@@ -31,7 +31,7 @@ const BASE44_API_URL     = process.env.BASE44_API_URL || 'https://fr-2758ee0c.ba
 // ─── Config Leone Immobilier (fallback hardcodé) ──────────────────────────
 const DEF_CFG = {
   nom_agence: 'LEONE IMMOBILIER',
-  client_db_id: '6a04962d03547f6dfdbf8dea', // ID staging Leone
+  client_db_id: '6a0cdf1388a8c7697ae8a452', // ID prod Leone Immobilier
   voix: 'coral',
   message_accueil: "Bonjour et bienvenue à l'agence Leone immobilier, comment puis-je vous aider ?",
   agents_arr: [
@@ -109,7 +109,7 @@ async function saveLead(lead, cfg, transcript) {
       agent_initiales: lead.agent || '',
       agent_nom: lead.agentNom || '',
       statut: 'nouveau',
-      notes: `client_id:${(cfg.client_id||'').toLowerCase()}\nVille: ${lead.ville||''} | Prix: ${lead.prix||''} | Ref: ${lead.ref||''}\n---\n` +
+      notes: `client_id:${(cfg.client_db_id||'').toLowerCase()}\nVille: ${lead.ville||''} | Prix: ${lead.prix||''} | Ref: ${lead.ref||''}\n---\n` +
              transcript.map(t => `${t.r==='a'?'Sophie':'Appelant'}: ${t.t}`).join('\n')
     };
     const res = await fetch(url, {
