@@ -197,7 +197,7 @@ app.post('/twiml', (req, res) => {
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://voiceimmo-ws-production.up.railway.app">
+    <Stream url="wss://ws.voiceimmo.fr">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
