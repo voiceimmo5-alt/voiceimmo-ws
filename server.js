@@ -25,6 +25,7 @@ console.log   = (...a) => { origConsoleLog(...a);   pushLog('info',  a); };
 console.error = (...a) => { origConsoleError(...a); pushLog('error', a); };
 
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
+const OAI_MODEL = process.env.OAI_MODEL || 'gpt-4o-realtime-preview';
 const BASE44_SERVICE_TOKEN = process.env.BASE44_SERVICE_TOKEN || '';
 const BASE44_API_URL     = process.env.BASE44_API_URL || 'https://fr-2758ee0c.base44.app';
 
@@ -158,7 +159,7 @@ app.get('/logs', (req, res) => {
 
 
 app.get('/model-check', (req, res) => res.json({ 
-  model: 'wss://api.openai.com/v1/realtime?model=gpt-realtime',
+  model: `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
   version: 'v31-prod',
   build: 'force-rebuild-001'
 }));
@@ -236,7 +237,7 @@ wss.on('connection', (ws, req) => {
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
+      `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
       ['realtime'],
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
     );
