@@ -156,6 +156,12 @@ app.get('/logs', (req, res) => {
   res.json({ logs, serverTime: Date.now(), version: 'v31-prod' });
 });
 
+
+app.get('/model-check', (req, res) => res.json({ 
+  model: 'wss://api.openai.com/v1/realtime?model=gpt-realtime',
+  version: 'v31-prod',
+  build: 'force-rebuild-001'
+}));
 app.get('/stats', async (req, res) => {
   let oaiOk = false;
   try {
