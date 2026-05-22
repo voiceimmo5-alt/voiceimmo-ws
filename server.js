@@ -239,7 +239,7 @@ wss.on('connection', (ws, req) => {
     oai = new WebSocket(
       `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
       ['realtime'],
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
 
     oai.on('open', () => {
