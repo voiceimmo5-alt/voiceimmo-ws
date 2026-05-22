@@ -4,7 +4,7 @@
   "description": "VoiceImmo WebSocket server for Twilio Media Streams",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "bash start.sh"
   },
   "dependencies": {
     "ws": "^8.16.0",
