@@ -158,11 +158,17 @@ app.get('/logs', (req, res) => {
 });
 
 
-app.get('/model-check', (req, res) => res.json({ 
-  model: `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
-  version: 'v31-prod',
-  build: 'force-rebuild-001'
-}));
+app.get('/model-check', (req, res) => {
+  const fs = require('fs');
+  const src = fs.readFileSync('/app/server.js', 'utf8');
+  const match = src.match(/oai\.send\(JSON\.stringify\(\{[\s\S]*?\}\)\)\);/m);
+  res.json({ 
+    model: `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
+    version: 'v31-prod',
+    build: 'ga-api-v2',
+    session_update_snippet: match ? match[0].substring(0, 500) : 'not found'
+  });
+});
 app.get('/stats', async (req, res) => {
   let oaiOk = false;
   try {
