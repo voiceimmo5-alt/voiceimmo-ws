@@ -250,6 +250,7 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'realtime',
           modalities: ['text', 'audio'],
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
           voice: voix,
