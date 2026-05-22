@@ -2,7 +2,6 @@
 const http      = require('http');
 const express   = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
-const nodemailer = require('nodemailer');
 
 const app    = express();
 const server = http.createServer(app);
@@ -27,13 +26,10 @@ console.error = (...a) => { origConsoleError(...a); pushLog('error', a); };
 // ─── Variables d'environnement (injectées dans Railway) ──────────────────────
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OAI_MODEL      = process.env.OAI_MODEL      || 'gpt-4o-realtime-preview';
-const SMTP_HOST      = process.env.SMTP_HOST      || 'smtp.gmail.com';
-const SMTP_PORT      = parseInt(process.env.SMTP_PORT || '587');
-const SMTP_USER      = process.env.SMTP_USER      || 'voiceimmo5@gmail.com';
-const SMTP_PASS      = process.env.SMTP_PASS      || '';
-const EMAIL_FROM     = process.env.EMAIL_FROM     || 'voiceimmo5@gmail.com';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const EMAIL_FROM     = process.env.EMAIL_FROM     || 'VoiceImmo <voiceimmo@voiceimmo.fr>';
 
-// ─── Config Leone Immobilier (autonome — aucune dépendance externe) ──────────
+// ─── Config clients (autonome — zéro dépendance externe) ─────────────────────
 const CONFIGS = {
   '+33939245959': {
     nom_agence: 'LEONE IMMOBILIER',
@@ -46,9 +42,9 @@ const CONFIGS = {
       { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com', zones: 'villette de vienne, vienne, roussillon, grigny' },
       { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',  zones: 'villefontaine, nord rhone, beaujolais, villefranche' }
     ],
-    destinataires_email: 'leone.immobilier@gmail.com,christophe.despretz@gmail.com',
+    destinataires_email: ['leone.immobilier@gmail.com', 'christophe.despretz@gmail.com'],
   },
-  '+33939247019': { // staging
+  '+33939247019': {
     nom_agence: 'LEONE IMMOBILIER (STAGING)',
     client_db_id: '6a057fa03ad6f7b2ebf4b79e',
     voix: 'coral',
@@ -59,7 +55,7 @@ const CONFIGS = {
       { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com', zones: 'villette de vienne, vienne, roussillon' },
       { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',  zones: 'villefontaine, nord rhone, beaujolais' }
     ],
-    destinataires_email: 'christophe.despretz@gmail.com',
+    destinataires_email: ['christophe.despretz@gmail.com'],
   }
 };
 
@@ -68,65 +64,71 @@ const DEF_CFG = CONFIGS['+33939245959'];
 function getConfig(numTwilio) {
   const key = numTwilio.startsWith('+') ? numTwilio : `+${numTwilio}`;
   const cfg = CONFIGS[key];
-  if (cfg) {
-    console.log(`[CFG] Config trouvée pour ${key}: ${cfg.nom_agence}`);
-    return cfg;
-  }
+  if (cfg) { console.log(`[CFG] Config trouvée pour ${key}: ${cfg.nom_agence}`); return cfg; }
   console.log(`[CFG] Numéro ${key} inconnu → fallback Leone`);
   return DEF_CFG;
 }
 
-// ─── Transporter email SMTP ──────────────────────────────────────────────────
-function createTransporter() {
-  return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: false,
-    auth: { user: SMTP_USER, pass: SMTP_PASS },
-    tls: { rejectUnauthorized: false }
-  });
-}
-
-// ─── Envoyer email de notification lead ─────────────────────────────────────
+// ─── Envoyer email via Resend API (HTTP direct, zéro SMTP) ──────────────────
 async function sendEmail(lead, cfg, transcript) {
-  if (!SMTP_PASS) {
-    console.log('[EMAIL] Pas de SMTP_PASS → email ignoré');
+  if (!RESEND_API_KEY) {
+    console.log('[EMAIL] Pas de RESEND_API_KEY → email ignoré');
     return;
   }
   try {
-    const transporter = createTransporter();
     const transcriptHtml = transcript.map(t =>
-      `<tr><td style="color:${t.r==='a'?'#7c3aed':'#1d4ed8'};padding:4px 8px;font-weight:bold">${t.r==='a'?'Sophie':'Appelant'}</td><td style="padding:4px 8px">${t.t}</td></tr>`
+      `<tr>
+        <td style="color:${t.r==='a'?'#7c3aed':'#1d4ed8'};padding:4px 12px;font-weight:bold;white-space:nowrap">${t.r==='a'?'🤖 Sophie':'👤 Appelant'}</td>
+        <td style="padding:4px 12px">${t.t}</td>
+      </tr>`
     ).join('');
 
-    const recipients = (cfg.destinataires_email || DEF_CFG.destinataires_email)
-      .split(',').map(e => e.trim()).filter(Boolean);
+    const to = Array.isArray(cfg.destinataires_email) ? cfg.destinataires_email : [cfg.destinataires_email];
 
-    await transporter.sendMail({
-      from: `"VoiceImmo" <${EMAIL_FROM}>`,
-      to: recipients.join(', '),
-      subject: `🏠 Nouveau lead — ${lead.nom || 'Inconnu'} — ${cfg.nom_agence}`,
-      html: `
-        <h2 style="color:#7c3aed">Nouveau lead VoiceImmo</h2>
-        <table border="0" cellpadding="4">
-          <tr><td><b>Nom</b></td><td>${lead.nom || 'Non renseigné'}</td></tr>
-          <tr><td><b>Téléphone</b></td><td>${lead.tel || 'Non renseigné'}</td></tr>
-          <tr><td><b>Besoin</b></td><td>${lead.besoin || 'Non renseigné'}</td></tr>
-          <tr><td><b>Ville</b></td><td>${lead.ville || 'Non renseignée'}</td></tr>
-          <tr><td><b>Prix</b></td><td>${lead.prix || 'Non renseigné'}</td></tr>
-          <tr><td><b>Référence</b></td><td>${lead.ref || 'Non renseignée'}</td></tr>
-          <tr><td><b>Agent</b></td><td>${lead.agentNom || lead.agent || 'Non assigné'}</td></tr>
-        </table>
-        <h3 style="color:#374151;margin-top:20px">Transcription</h3>
-        <table border="0" cellpadding="4" style="background:#f9fafb;border-radius:8px;width:100%;max-width:600px">
-          ${transcriptHtml || '<tr><td colspan="2">Aucune transcription disponible</td></tr>'}
-        </table>
-        <p style="color:#9ca3af;font-size:12px;margin-top:20px">VoiceImmo — Système de réception d'appels IA</p>
-      `
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: EMAIL_FROM,
+        to,
+        subject: `🏠 Nouveau lead — ${lead.nom || 'Inconnu'} — ${cfg.nom_agence}`,
+        html: `
+          <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+            <h2 style="color:#7c3aed;border-bottom:2px solid #7c3aed;padding-bottom:8px">
+              🏠 Nouveau lead VoiceImmo
+            </h2>
+            <table border="0" cellpadding="6" style="width:100%;background:#f9fafb;border-radius:8px;margin-bottom:20px">
+              <tr><td style="font-weight:bold;width:140px">👤 Nom</td><td>${lead.nom || 'Non renseigné'}</td></tr>
+              <tr><td style="font-weight:bold">📞 Téléphone</td><td>${lead.tel || 'Non renseigné'}</td></tr>
+              <tr><td style="font-weight:bold">🎯 Besoin</td><td>${lead.besoin || 'Non renseigné'}</td></tr>
+              <tr><td style="font-weight:bold">📍 Ville</td><td>${lead.ville || 'Non renseignée'}</td></tr>
+              <tr><td style="font-weight:bold">💰 Budget</td><td>${lead.prix || 'Non renseigné'}</td></tr>
+              <tr><td style="font-weight:bold">🔖 Référence</td><td>${lead.ref || 'Non renseignée'}</td></tr>
+              <tr><td style="font-weight:bold">🧑‍💼 Agent</td><td>${lead.agentNom || lead.agent || 'Non assigné'}</td></tr>
+            </table>
+            <h3 style="color:#374151">📝 Transcription de l'appel</h3>
+            <table border="0" cellpadding="4" style="background:#f9fafb;border-radius:8px;width:100%">
+              ${transcriptHtml || '<tr><td colspan="2" style="padding:12px;color:#9ca3af">Aucune transcription disponible</td></tr>'}
+            </table>
+            <p style="color:#9ca3af;font-size:11px;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:12px">
+              VoiceImmo — Système de réception d'appels IA • ${cfg.nom_agence}
+            </p>
+          </div>
+        `
+      })
     });
-    console.log('[EMAIL] ✅ Email envoyé à:', recipients.join(', '));
+
+    if (res.ok) {
+      console.log('[EMAIL] ✅ Email envoyé via Resend à:', to.join(', '));
+    } else {
+      const err = await res.text();
+      console.error('[EMAIL] ❌ Erreur Resend:', res.status, err);
+    }
   } catch(e) {
-    console.error('[EMAIL] Erreur:', e.message);
+    console.error('[EMAIL] Exception:', e.message);
   }
 }
 
@@ -144,7 +146,7 @@ app.get('/debug', async (req, res) => {
     version: 'v32-autonomous',
     hasOAI: !!OPENAI_API_KEY,
     oaiOk,
-    hasSMTP: !!SMTP_PASS,
+    hasResend: !!RESEND_API_KEY,
     node: process.version,
     configs: Object.keys(CONFIGS),
   });
@@ -153,8 +155,7 @@ app.get('/debug', async (req, res) => {
 app.get('/logs', (req, res) => {
   const n = parseInt(req.query.n || '50');
   const since = parseInt(req.query.since || '0');
-  const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
-  res.json({ logs, serverTime: Date.now(), version: 'v32-autonomous' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v32-autonomous' });
 });
 
 app.get('/stats', async (req, res) => {
@@ -167,9 +168,8 @@ app.get('/stats', async (req, res) => {
     ok: true, version: 'v32-autonomous',
     uptime: Math.floor(process.uptime()),
     memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-    oaiOk, hasSMTP: !!SMTP_PASS,
-    node: process.version,
-    serverTime: Date.now(),
+    oaiOk, hasResend: !!RESEND_API_KEY,
+    node: process.version, serverTime: Date.now(),
     activeConnections: wss.clients.size,
     configs: Object.keys(CONFIGS),
   });
@@ -207,32 +207,31 @@ RÈGLES ABSOLUES :
   2. Nature du besoin (achat, vente, location, estimation)
   3. Ville / secteur du bien
   4. Budget approximatif
-  5. Référence du bien (si disponible)
+  5. Référence du bien si disponible
   6. Confirmer le numéro détecté : "${callerNum}"
 - Après collecte complète : "Merci [Prénom], un agent va vous rappeler très rapidement. Au revoir !"
-- Puis raccrocher
 
 AGENTS ET ZONES :
 ${agentsStr}
 
 Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
-Numéro de l'appelant détecté : ${callerNum}`;
+Numéro détecté : ${callerNum}`;
 }
 
 // ─── WebSocket Handler ────────────────────────────────────────────────────────
 wss.on('connection', (ws, req) => {
   console.log('[WS] ✅ Connexion depuis', req.socket.remoteAddress);
 
-  let streamSid = '';
-  let oai       = null;
-  let ready     = false;
-  let queue     = [];
+  let streamSid  = '';
+  let oai        = null;
+  let ready      = false;
+  let queue      = [];
   let transcript = [];
-  let curAss    = '';
-  let lead      = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
-  let cfg       = DEF_CFG;
-  let saved     = false;
-  let callTimer = null;
+  let curAss     = '';
+  let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
+  let cfg        = DEF_CFG;
+  let saved      = false;
+  let callTimer  = null;
 
   function hangup() {
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
@@ -255,9 +254,7 @@ wss.on('connection', (ws, req) => {
 
     oai.on('open', () => {
       console.log('[OAI] Connecté → session.update');
-      const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
-      const voix    = cfg?.voix || 'coral';
-
+      const voix = cfg?.voix || 'coral';
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
@@ -286,12 +283,10 @@ wss.on('connection', (ws, req) => {
         ready = true;
         const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
-
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-
         oai.send(JSON.stringify({
           type: 'response.create',
           response: {
@@ -319,9 +314,7 @@ wss.on('connection', (ws, req) => {
         parseLeadInfo(m.transcript);
       }
 
-      if (m.type === 'error') {
-        console.error('[OAI] Erreur:', JSON.stringify(m.error));
-      }
+      if (m.type === 'error') console.error('[OAI] Erreur:', JSON.stringify(m.error));
     });
 
     oai.on('error', (e) => console.error('[OAI] WS Error:', e.message));
@@ -342,26 +335,20 @@ wss.on('connection', (ws, req) => {
     if (m.event === 'connected') {
       console.log('[WS] Event: connected');
     }
-
     else if (m.event === 'start') {
       streamSid    = m.start?.streamSid || '';
       const params = m.start?.customParameters || {};
       const caller = params.caller || params.From || m.start?.from || '';
       const to     = params.to     || params.To   || m.start?.to   || '';
-
       console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to}`);
-
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
-
       cfg = getConfig(to || '');
       connectOAI(lead.tel);
-
       callTimer = setTimeout(() => {
         console.log('[TIMER] 2min → raccrocher');
         hangup();
       }, 120000);
     }
-
     else if (m.event === 'media' && m.media?.payload) {
       const b64 = m.media.payload;
       if (oai && oai.readyState === WebSocket.OPEN && ready) {
@@ -370,7 +357,6 @@ wss.on('connection', (ws, req) => {
         queue.push(b64);
       }
     }
-
     else if (m.event === 'stop') {
       console.log(`[WS] STOP — ${transcript.length} échanges`);
       await flush();
