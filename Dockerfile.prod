@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:20-slim
 
 WORKDIR /app
 
@@ -12,4 +12,4 @@ ENV OAI_MODEL=gpt-realtime
 
 EXPOSE 8080
 
-ENTRYPOINT ["node", "server.js"]
+CMD ["node", "server.js"]
