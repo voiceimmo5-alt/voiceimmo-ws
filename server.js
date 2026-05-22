@@ -258,13 +258,11 @@ wss.on('connection', (ws, req) => {
         session: {
           type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
-          temperature: 0.7,
-          max_response_output_tokens: 200,
           audio: {
             input: {
               format: { type: 'g711_ulaw', rate: 8000 },
-              transcription: { model: 'whisper-1', language: 'fr' }
+              transcription: { model: 'whisper-1', language: 'fr' },
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
             },
             output: {
               format: { type: 'g711_ulaw', rate: 8000 },
