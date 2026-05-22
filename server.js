@@ -387,12 +387,11 @@ Numéro de l'appelant : ${callerNum}`;
       // Format numéro appelant pour lecture
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
 
-      // Charger config client
+      // Lancer getConfig ET connectOAI EN PARALLÈLE pour réduire la latence
+      console.log('[WS] Lancement parallèle getConfig + connectOAI');
+      connectOAI(lead.tel); // démarre immédiatement sans attendre la config
       cfg = await getConfig(to || '');
       console.log(`[CFG] Config chargée: ${cfg.nom_agence}`);
-
-      // Démarrer OAI
-      connectOAI(lead.tel);
 
       // Timer 2 minutes max
       callTimer = setTimeout(() => {
