@@ -136,7 +136,7 @@ async function sendEmail(lead, cfg) {
 }
 
 // ─── Endpoints HTTP ───────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v25-clean', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v31-prod', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -146,14 +146,14 @@ app.get('/debug', async (req, res) => {
     const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
     oaiOk = r.ok;
   } catch(_) {}
-  res.json({ version: 'v25-clean', hasOAI: hasKey, oaiOk, node: process.version });
+  res.json({ version: 'v31-prod', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
   const n = parseInt(req.query.n || '50');
   const since = parseInt(req.query.since || '0');
   const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
-  res.json({ logs, serverTime: Date.now(), version: 'v25-clean' });
+  res.json({ logs, serverTime: Date.now(), version: 'v31-prod' });
 });
 
 app.get('/stats', async (req, res) => {
@@ -164,7 +164,7 @@ app.get('/stats', async (req, res) => {
   } catch(_) {}
   res.json({
     ok: true,
-    version: 'v25-clean',
+    version: 'v31-prod',
     uptime: Math.floor(process.uptime()),
     memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     oaiOk,
@@ -230,7 +230,7 @@ wss.on('connection', (ws, req) => {
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
       ['realtime'],
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
     );
@@ -408,4 +408,4 @@ Numéro de l'appelant : ${callerNum}`;
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v25-clean sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v31-prod sur port ${PORT}`));
