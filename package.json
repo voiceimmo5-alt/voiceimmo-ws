@@ -14,5 +14,5 @@
   "engines": {
     "node": ">=18"
   },
-  "_deploy": "v29-oai-fix-force"
+  "_deploy": "v31-force-rebuild"
 }
