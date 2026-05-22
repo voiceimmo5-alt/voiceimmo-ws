@@ -250,13 +250,12 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
-          modalities: ['text', 'audio'],
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
           voice: voix,
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1', language: 'fr' },
+          audio: {
+            input: { format: { type: 'audio/pcmu', rate: 8000 } },
+            output: { format: { type: 'audio/pcmu', rate: 8000 } }
+          },
           turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
           temperature: 0.7,
           max_response_output_tokens: 200,
@@ -290,7 +289,7 @@ wss.on('connection', (ws, req) => {
       }
 
       // Audio généré par OAI → renvoyer à Twilio
-      if (m.type === 'response.audio.delta' && m.delta && streamSid) {
+      if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
         if (ws.readyState === 1) { // 1 = OPEN
           ws.send(JSON.stringify({
             event: 'media',
