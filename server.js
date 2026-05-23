@@ -166,27 +166,27 @@ async function sendEmail(lead, cfg, transcript) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v39-otp-bg', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v40-otp-final', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ version: 'v39-otp-bg', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v40-otp-final', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v39-otp-bg' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v40-otp-final' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ ok: true, version: 'v39-otp-bg', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v40-otp-final', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -435,13 +435,13 @@ app.post('/send-otp', express.json(), (req, res) => {
   const code = body.code;
   const expiry = body.expiry || '10 min';
   if (!to || !code) return res.status(400).json({ error: 'Paramètres manquants' });
-  log('INFO', '[OTP] Requête reçue pour ' + to + ' code=' + code);
+  console.log('[OTP] Requête reçue pour ' + to + ' code=' + code);
   // Répondre immédiatement pour éviter le timeout Railway
   res.json({ ok: true, queued: true });
   // Envoyer l'email en arrière-plan
   sendOtpEmail(to, code, expiry)
-    .then(() => log('INFO', '[OTP] ✅ Email OTP envoyé à ' + to))
-    .catch(e => log('ERROR', '[OTP] Echec envoi email: ' + e.message));
+    .then(() => console.log('[OTP] ✅ Email OTP envoyé à ' + to))
+    .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v39-otp-bg sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v40-otp-final sur port ${PORT}`));
