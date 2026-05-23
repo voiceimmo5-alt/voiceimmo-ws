@@ -249,27 +249,27 @@ async function sendOtpEmail(to, code, expiry) {
 
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v46-live', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v47-live', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ version: 'v46-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v47-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v46-live' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v47-live' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ ok: true, version: 'v46-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v47-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -297,7 +297,7 @@ function buildPrompt(c, callerNum) {
     const prompt = c.instructions_ia
       .replace(/\{\{CALLER\}\}/g, callerNum)
       .replace(/\{\{NUM\}\}/g, callerNum);
-    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence);
+    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum);
     return prompt;
   }
   // Priorité 2 : prompt générique fallback
@@ -315,7 +315,7 @@ RÈGLES ABSOLUES :
   3. Ville / secteur du bien
   4. Budget approximatif
   5. Référence du bien si disponible
-  6. Confirmer le numéro détecté : "${callerNum}"
+  6. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
 - Après collecte complète : "Merci [Prénom], un agent va vous rappeler très rapidement. Au revoir !"
 
 AGENTS ET ZONES :
@@ -470,6 +470,31 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'response.audio_transcript.done' && curAss) {
         transcript.push({ r: 'a', t: curAss });
         console.log(`[IA] "${curAss.slice(0, 100)}"`);
+        // Détection phrase de fin → raccrocher après 2s
+        const finPhrases = /au revoir|à très bientôt|bonne journée|bonne soirée|rappeler très rapidement/i;
+        if (finPhrases.test(curAss) && streamSid) {
+          console.log('[FIN] Phrase de fin détectée → raccrochage dans 2s');
+          setTimeout(async () => {
+            try {
+              // Envoyer event stop à Twilio via le stream
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ event: 'clear', streamSid }));
+              }
+              // Raccrocher via Twilio REST API
+              const callSid = streamSid.replace(/^MZ/, 'CA');
+              const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+              await fetch(`https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`, {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'Status=completed'
+              });
+              console.log('[FIN] Appel raccroché via Twilio REST');
+            } catch(e) {
+              console.warn('[FIN] Erreur raccrochage:', e.message);
+            }
+            await flush();
+          }, 2000);
+        }
         curAss = '';
       }
 
@@ -586,4 +611,4 @@ app.post('/send-otp', express.json(), (req, res) => {
     .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v46-live sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v47-live sur port ${PORT}`));
