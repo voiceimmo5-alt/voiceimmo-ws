@@ -166,27 +166,27 @@ async function sendEmail(lead, cfg, transcript) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v34-gmail-oauth2', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v35-send-otp', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ version: 'v34-gmail-oauth2', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v35-send-otp', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v34-gmail-oauth2' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v35-send-otp' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ ok: true, version: 'v34-gmail-oauth2', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v35-send-otp', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -384,4 +384,29 @@ wss.on('connection', (ws, req) => {
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v34-gmail-oauth2 sur port ${PORT}`));
+
+// ─── Route OTP Admin ────────────────────────────────────────────────────────
+app.post('/send-otp', express.json(), async (req, res) => {
+  const { to, code, expiry } = req.body;
+  if (!to || !code) return res.status(400).json({ error: 'Paramètres manquants' });
+  log('INFO', `[OTP] Envoi code ${code} vers ${to}`);
+  try {
+    await sendGmail(
+      to,
+      `Code OTP Voxzen Admin — ${code}`,
+      `<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;">
+        <h2 style="color:#4f46e5;">⚡ Voxzen Admin</h2>
+        <p>Votre code de connexion :</p>
+        <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px;">${code}</div>
+        <p style="color:#6b7280;font-size:13px;">Valide jusqu'à ${expiry} — Ne partagez pas ce code.</p>
+      </div>`
+    );
+    log('INFO', `[OTP] Code envoyé avec succès à ${to}`);
+    res.json({ ok: true });
+  } catch(e) {
+    log('ERROR', `[OTP] Échec envoi: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v35-send-otp sur port ${PORT}`));
