@@ -32,6 +32,7 @@ const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
 const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
 const BASE44_PROXY_URL   = 'https://fr-2758ee0c.base44.app/functions/getClientConfig';
 const BASE44_API_KEY     = process.env.BASE44_API_KEY     || '';
+const BASE44_APP_URL     = 'https://fr-2758ee0c.base44.app/functions';
 
 // ─── Config clients (dynamique depuis Base44) ────────────────────────────────
 // Fallback hardcodé si le proxy est indisponible
@@ -248,27 +249,27 @@ async function sendOtpEmail(to, code, expiry) {
 
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v44-live', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v45-live', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ version: 'v44-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v45-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v44-live' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v45-live' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ ok: true, version: 'v44-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v45-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -345,10 +346,69 @@ wss.on('connection', (ws, req) => {
     if (oai && oai.readyState === WebSocket.OPEN) oai.close();
   }
 
+
+  // ─── Sauvegarde lead en base ────────────────────────────────────────────────
+  async function saveLead(leadData, cfgData) {
+    try {
+      const payload = {
+        nom:              leadData.nom      || 'Inconnu',
+        telephone:        leadData.tel      || 'Inconnu',
+        besoin:           leadData.besoin   || '',
+        ville:            leadData.ville    || '',
+        prix:             leadData.prix     || '',
+        reference:        leadData.ref      || '',
+        agent_initiales:  leadData.agent    || '',
+        agent_nom:        leadData.agentNom || '',
+        statut:           'nouveau',
+        email_envoye:     true,
+        client_id:        cfgData?.client_db_id || null,
+      };
+      const res = await fetch(`${BASE44_APP_URL}/saveLead`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+        signal:  AbortSignal.timeout(8000)
+      });
+      const data = await res.json();
+      if (data.ok) {
+        console.log('[LEAD] ✅ Lead sauvegardé en base, id:', data.id);
+      } else {
+        console.warn('[LEAD] ⚠️ Erreur saveLead:', JSON.stringify(data));
+      }
+    } catch(e) {
+      console.warn('[LEAD] ⚠️ Exception saveLead:', e.message);
+    }
+  }
+
+  // ─── Incrémentation compteurs appels ────────────────────────────────────────
+  async function incrementAppels(cfgData) {
+    try {
+      const res = await fetch(`${BASE44_APP_URL}/incrementAppels`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ client_db_id: cfgData?.client_db_id }),
+        signal:  AbortSignal.timeout(8000)
+      });
+      const data = await res.json();
+      if (data.ok) {
+        console.log('[APPEL] ✅ Compteurs incrémentés →', `total:${data.appels_total} mois:${data.appels_mois}`);
+      } else {
+        console.warn('[APPEL] ⚠️ Erreur incrementAppels:', JSON.stringify(data));
+      }
+    } catch(e) {
+      console.warn('[APPEL] ⚠️ Exception incrementAppels:', e.message);
+    }
+  }
+
   async function flush() {
     if (saved) return; saved = true;
     hangup();
-    await sendEmail(lead, cfg, transcript);
+    const activeCfg = cfg || DEF_CFG();
+    await Promise.all([
+      sendEmail(lead, activeCfg, transcript),
+      saveLead(lead, activeCfg),
+      incrementAppels(activeCfg),
+    ]);
   }
 
   function connectOAI(callerNum) {
@@ -515,4 +575,4 @@ app.post('/send-otp', express.json(), (req, res) => {
     .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v44-live sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v45-live sur port ${PORT}`));
