@@ -30,6 +30,8 @@ const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
 const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
 const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
 const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
+const BASE44_PROXY_URL   = 'https://fr-2758ee0c.base44.app/functions/getClientConfig';
+const BASE44_API_KEY     = process.env.BASE44_API_KEY     || '';
 
 // ─── Config clients (dynamique depuis Base44) ────────────────────────────────
 // Fallback hardcodé si le proxy est indisponible
@@ -99,9 +101,13 @@ function mapClientToConfig(c) {
 
 async function refreshConfigs() {
   try {
-    const url = `${BASE44_PROXY_URL}`;
-    const headers = BASE44_API_KEY ? { 'Authorization': `Bearer ${BASE44_API_KEY}` } : {};
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+    const url = BASE44_PROXY_URL;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(8000)
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const clients = data.clients || [];
@@ -242,27 +248,27 @@ async function sendOtpEmail(to, code, expiry) {
 
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v43-dynamic', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v44-live', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ version: 'v43-dynamic', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v44-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v43-dynamic' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v44-live' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ ok: true, version: 'v43-dynamic', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v44-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -509,4 +515,4 @@ app.post('/send-otp', express.json(), (req, res) => {
     .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v43-dynamic sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v44-live sur port ${PORT}`));
