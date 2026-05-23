@@ -409,11 +409,11 @@ const PORT = process.env.PORT || 8080;
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
 app.post('/send-otp', express.json(), (req, res) => {
   const body = req.body || {};
-  const to = body.to;
+  const to = 'admin@voxzen.io';  // Toujours forcer admin@voxzen.io
   const code = body.code;
   const expiry = body.expiry || '10 min';
-  if (!to || !code) return res.status(400).json({ error: 'Paramètres manquants' });
-  console.log('[OTP] Requête reçue pour ' + to + ' code=' + code);
+  if (!code) return res.status(400).json({ error: 'Paramètres manquants' });
+  console.log('[OTP] Requête reçue → ' + to + ' code=' + code);
   // Répondre immédiatement pour éviter le timeout Railway
   res.json({ ok: true, queued: true });
   // Envoyer l'email en arrière-plan
