@@ -31,14 +31,16 @@ const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
 const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
 const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
 
-// ─── Config clients (autonome) ────────────────────────────────────────────────
-const CONFIGS = {
+// ─── Config clients (dynamique depuis Base44) ────────────────────────────────
+// Fallback hardcodé si le proxy est indisponible
+const CONFIGS_FALLBACK = {
   '+33939245959': {
     nom_agence:          'LEONE IMMOBILIER',
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
     voix:                'coral',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour et bienvenue chez Leone Immobilier, comment puis-je vous aider ?",
+    instructions_ia:     null,
     agents_arr: [
       { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite, charly' },
       { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com',  zones: 'villette de vienne, vienne, roussillon, grigny' },
@@ -52,6 +54,7 @@ const CONFIGS = {
     voix:                'coral',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour, ceci est le serveur de test Leone Immobilier. Comment puis-je vous aider ?",
+    instructions_ia:     null,
     agents_arr: [
       { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite' },
       { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com',  zones: 'villette de vienne, vienne, roussillon' },
@@ -61,15 +64,74 @@ const CONFIGS = {
   }
 };
 
-const DEF_CFG = CONFIGS['+33939245959'];
+// Cache dynamique — mis à jour depuis Base44 toutes les 5 minutes
+let CONFIGS = { ...CONFIGS_FALLBACK };
+
+function mapClientToConfig(c) {
+  // Convertit un enregistrement Client Base44 en config voicebot
+  const num = c.numero_actuel || '';
+  const fallback = CONFIGS_FALLBACK[num] || {};
+  let agents_arr = fallback.agents_arr || [];
+  if (c.agents && typeof c.agents === 'string') {
+    try { agents_arr = JSON.parse(c.agents); } catch(e) {}
+  } else if (Array.isArray(c.agents)) {
+    agents_arr = c.agents;
+  }
+  let dest = fallback.destinataires_email || [];
+  if (c.destinataires_email) {
+    if (typeof c.destinataires_email === 'string') {
+      dest = c.destinataires_email.split(',').map(e => e.trim()).filter(Boolean);
+    } else if (Array.isArray(c.destinataires_email)) {
+      dest = c.destinataires_email;
+    }
+  }
+  return {
+    nom_agence:          c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
+    client_db_id:        c.id || fallback.client_db_id,
+    voix:                c.voix || fallback.voix || 'coral',
+    site_internet:       c.site_internet || fallback.site_internet || '',
+    message_accueil:     c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
+    instructions_ia:     c.instructions_ia || null,
+    agents_arr,
+    destinataires_email: dest,
+  };
+}
+
+async function refreshConfigs() {
+  try {
+    const url = `${BASE44_PROXY_URL}`;
+    const headers = BASE44_API_KEY ? { 'Authorization': `Bearer ${BASE44_API_KEY}` } : {};
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const clients = data.clients || [];
+    const newConfigs = { ...CONFIGS_FALLBACK };
+    for (const c of clients) {
+      if (c.numero_actuel) {
+        newConfigs[c.numero_actuel] = mapClientToConfig(c);
+      }
+    }
+    CONFIGS = newConfigs;
+    console.log(`[CFG] ✅ Config rechargée depuis Base44 — ${clients.length} client(s): ${Object.keys(newConfigs).join(', ')}`);
+  } catch(e) {
+    console.warn('[CFG] ⚠️ Impossible de charger Base44, config fallback utilisée:', e.message);
+  }
+}
+
+// Charger au démarrage puis toutes les 5 minutes
+refreshConfigs();
+setInterval(refreshConfigs, 5 * 60 * 1000);
+
+const DEF_CFG = () => CONFIGS['+33939245959'] || Object.values(CONFIGS)[0];
 
 function getConfig(numTwilio) {
   const key = numTwilio.startsWith('+') ? numTwilio : `+${numTwilio}`;
   const cfg = CONFIGS[key];
   if (cfg) { console.log(`[CFG] Config trouvée pour ${key}: ${cfg.nom_agence}`); return cfg; }
-  console.log(`[CFG] Numéro ${key} inconnu → fallback Leone`);
-  return DEF_CFG;
+  console.log(`[CFG] Numéro ${key} inconnu → fallback`);
+  return DEF_CFG();
 }
+
 
 // ─── Gmail OAuth2 — obtenir un access token ──────────────────────────────────
 async function getGmailAccessToken() {
@@ -180,27 +242,27 @@ async function sendOtpEmail(to, code, expiry) {
 
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v42-gmail', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v43-dynamic', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ version: 'v42-gmail', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v43-dynamic', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v42-gmail' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v43-dynamic' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ ok: true, version: 'v42-gmail', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v43-dynamic', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -223,6 +285,16 @@ app.post('/twiml', (req, res) => {
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
 function buildPrompt(c, callerNum) {
+  // Priorité 1 : instructions_ia personnalisées depuis la base de données
+  if (c.instructions_ia && c.instructions_ia.trim()) {
+    const prompt = c.instructions_ia
+      .replace(/\{\{CALLER\}\}/g, callerNum)
+      .replace(/\{\{NUM\}\}/g, callerNum);
+    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence);
+    return prompt;
+  }
+  // Priorité 2 : prompt générique fallback
+  console.log('[PROMPT] ⚠️ Fallback prompt générique pour', c.nom_agence);
   const agentsStr = (c.agents_arr || []).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
   return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
@@ -245,6 +317,7 @@ ${agentsStr}
 Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
 Numéro détecté : ${callerNum}`;
 }
+
 
 // ─── WebSocket Handler ────────────────────────────────────────────────────────
 wss.on('connection', (ws, req) => {
@@ -308,7 +381,7 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
+        const accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
@@ -425,4 +498,4 @@ app.post('/send-otp', express.json(), (req, res) => {
     .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v42-gmail sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v43-dynamic sur port ${PORT}`));
