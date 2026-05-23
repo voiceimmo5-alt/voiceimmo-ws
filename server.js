@@ -482,6 +482,17 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const PORT = process.env.PORT || 8080;
 
+// ─── Route reload-config (appelée par l'app après sauvegarde) ────────────────
+app.post('/reload-config', express.json(), async (req, res) => {
+  console.log('[CFG] 🔄 Rechargement forcé depuis l\'app client...');
+  try {
+    await refreshConfigs();
+    res.json({ ok: true, message: 'Config rechargée', configs: Object.keys(CONFIGS) });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
 app.post('/send-otp', express.json(), (req, res) => {
   const body = req.body || {};
