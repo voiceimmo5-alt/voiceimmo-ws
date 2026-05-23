@@ -26,8 +26,10 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 const OAI_MODEL          = process.env.OAI_MODEL          || 'gpt-4o-realtime-preview';
-const RESEND_API_KEY     = process.env.RESEND_API_KEY     || '';
-const EMAIL_FROM         = process.env.EMAIL_FROM         || 'VoiceImmo <noreply@voiceimmo.fr>';
+const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
+const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
+const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
+const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
 
 // ─── Config clients (autonome) ────────────────────────────────────────────────
 const CONFIGS = {
@@ -69,24 +71,59 @@ function getConfig(numTwilio) {
   return DEF_CFG;
 }
 
-// ─── Envoyer email via Resend ─────────────────────────────────────────────────
-async function sendResend(to, subject, html) {
-  if (!RESEND_API_KEY) { console.error('[EMAIL] RESEND_API_KEY manquante'); return false; }
-  const toArr = Array.isArray(to) ? to : [to];
-  const res = await fetch('https://api.resend.com/emails', {
+// ─── Gmail OAuth2 — obtenir un access token ──────────────────────────────────
+async function getGmailAccessToken() {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: EMAIL_FROM, to: toArr, subject, html })
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id:     GMAIL_CLIENT_ID,
+      client_secret: GMAIL_CLIENT_SECRET,
+      refresh_token: GMAIL_REFRESH_TOKEN,
+      grant_type:    'refresh_token'
+    })
+  });
+  const data = await res.json();
+  if (!data.access_token) throw new Error('Gmail token error: ' + JSON.stringify(data));
+  return data.access_token;
+}
+
+// ─── Envoyer email via Gmail API ─────────────────────────────────────────────
+async function sendGmail(to, subject, html) {
+  const accessToken = await getGmailAccessToken();
+  const toArr = Array.isArray(to) ? to : [to];
+  const boundary = 'boundary_' + Date.now();
+  const raw = [
+    'From: VoiceImmo <' + GMAIL_FROM + '>',
+    'To: ' + toArr.join(', '),
+    'Subject: ' + subject,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+    '',
+    html
+  ].join('\r\n');
+  const encoded = Buffer.from(raw).toString('base64url');
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ raw: encoded })
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error('Resend error ' + res.status + ': ' + err);
+    throw new Error('Gmail send error ' + res.status + ': ' + err);
   }
   return true;
 }
 
 // ─── Email notification lead ──────────────────────────────────────────────────
 async function sendEmail(lead, cfg, transcript) {
+  if (!GMAIL_CLIENT_ID || !GMAIL_REFRESH_TOKEN) {
+    console.log('[EMAIL] Credentials Gmail absents → email ignoré');
+    return false;
+  }
   try {
     const agentTrouve = (cfg.agents || []).find(a =>
       (lead.agent_initiales||'').toLowerCase().split('/').map(s=>s.trim()).some(ini => a.nom.split(' ')[0].toLowerCase() === ini) ||
@@ -115,37 +152,52 @@ async function sendEmail(lead, cfg, transcript) {
       + '</table>'
       + (transcriptHtml ? '<h3 style="margin-top:24px">Transcription</h3><table style="width:100%;border-collapse:collapse;font-size:14px">' + transcriptHtml + '</table>' : '')
       + '</div></div>';
-    await sendResend(destList, 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu'), html);
-    console.log('[EMAIL] ✅ Email envoyé via Resend à:', destList.join(', '));
+    for (const dest of destList) {
+      await sendGmail([dest], 'Nouveau lead VoiceImmo \u2014 ' + (lead.nom||'Inconnu'), html);
+    }
+    console.log('[EMAIL] \u2705 Email envoy\u00e9 via Gmail \u00e0:', destList.join(', '));
     return true;
   } catch(e) {
-    console.error('[EMAIL] ❌ Erreur Resend:', e.message);
+    console.error('[EMAIL] \u274c Erreur Gmail:', e.message);
     return false;
   }
 }
 
+// ─── Email OTP Admin ──────────────────────────────────────────────────────────
+async function sendOtpEmail(to, code, expiry) {
+  const html = '<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">'
+    + '<h2 style="color:#4f46e5">&#9889; Voxzen Admin</h2>'
+    + '<p>Votre code de connexion :</p>'
+    + '<div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px">' + code + '</div>'
+    + '<p style="color:#6b7280;font-size:13px">Valide jusqu&#39;&#224; ' + expiry + ' &mdash; Ne partagez pas ce code.</p>'
+    + '</div>';
+  await sendGmail(to, 'Code OTP Voxzen Admin \u2014 ' + code, html);
+  return true;
+}
+
+
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v41-resend', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v42-gmail', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
-  let oaiOk = false, resendOk = false;
+  let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
-  if (RESEND_API_KEY) resendOk = true;
-  res.json({ version: 'v41-resend', hasOAI: !!OPENAI_API_KEY, oaiOk, resendOk, configs: Object.keys(CONFIGS) });
+  try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
+  res.json({ version: 'v42-gmail', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v41-resend' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v42-gmail' });
 });
 
 app.get('/stats', async (req, res) => {
-  let oaiOk = false, resendOk = false;
+  let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
-  if (RESEND_API_KEY) resendOk = true;
-  res.json({ ok: true, version: 'v41-resend', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, resendOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
+  res.json({ ok: true, version: 'v42-gmail', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -382,4 +434,4 @@ app.post('/send-otp', express.json(), (req, res) => {
     .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v41-resend sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v42-gmail sur port ${PORT}`));
