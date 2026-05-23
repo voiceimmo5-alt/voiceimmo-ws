@@ -166,27 +166,27 @@ async function sendEmail(lead, cfg, transcript) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v37-otp-robust', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v38-crash-guard', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ version: 'v37-otp-robust', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v38-crash-guard', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v37-otp-robust' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v38-crash-guard' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ ok: true, version: 'v37-otp-robust', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v38-crash-guard', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -383,6 +383,16 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (e) => console.error('[WS] Erreur:', e.message));
 });
 
+
+// ─── Protection globale contre les crashes ──────────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('[CRASH] uncaughtException:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRASH] unhandledRejection:', reason);
+});
+
+
 const PORT = process.env.PORT || 8080;
 
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
@@ -450,4 +460,4 @@ app.post('/send-otp', express.json(), async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v37-otp-robust sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v38-crash-guard sur port ${PORT}`));
