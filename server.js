@@ -93,16 +93,19 @@ async function sendGmail(to, subject, html) {
   const accessToken = await getGmailAccessToken();
   const toArr = Array.isArray(to) ? to : [to];
   const boundary = 'boundary_' + Date.now();
+  // Encoder le sujet en UTF-8 base64 pour éviter les caractères corrompus
+  const subjectEncoded = '=?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=';
   const raw = [
     'From: VoiceImmo <' + GMAIL_FROM + '>',
     'To: ' + toArr.join(', '),
-    'Subject: ' + subject,
+    'Subject: ' + subjectEncoded,
     'MIME-Version: 1.0',
     'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: quoted-printable',
     '',
     html
   ].join('\r\n');
-  const encoded = Buffer.from(raw).toString('base64url');
+  const encoded = Buffer.from(raw, 'utf8').toString('base64url');
   const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: {
@@ -171,7 +174,7 @@ async function sendOtpEmail(to, code, expiry) {
     + '<div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px">' + code + '</div>'
     + '<p style="color:#6b7280;font-size:13px">Valide jusqu&#39;&#224; ' + expiry + ' &mdash; Ne partagez pas ce code.</p>'
     + '</div>';
-  await sendGmail(to, 'Code OTP Voxzen Admin \u2014 ' + code, html);
+  await sendGmail(to, 'Code OTP Voxzen Admin - ' + code, html);
   return true;
 }
 
