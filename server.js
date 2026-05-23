@@ -166,27 +166,27 @@ async function sendEmail(lead, cfg, transcript) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v36-otp-fix', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v37-otp-robust', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ version: 'v36-otp-fix', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v37-otp-robust', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v36-otp-fix' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v37-otp-robust' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk = true; } catch(_) {}
-  res.json({ ok: true, version: 'v36-otp-fix', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v37-otp-robust', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -386,46 +386,68 @@ wss.on('connection', (ws, req) => {
 const PORT = process.env.PORT || 8080;
 
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
+// ─── Route OTP Admin ────────────────────────────────────────────────────────
+async function sendOtpEmail(to, code, expiry) {
+  const accessToken = await getGmailAccessToken();
+  const htmlBody = '<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">'
+    + '<h2 style="color:#4f46e5">⚡ Voxzen Admin</h2>'
+    + '<p>Votre code de connexion :</p>'
+    + '<div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px">' + code + '</div>'
+    + '<p style="color:#6b7280;font-size:13px">Valide jusqu&apos;a ' + expiry + ' — Ne partagez pas ce code.</p>'
+    + '</div>';
+  const msgLines = [
+    'From: Voxzen Admin <' + GMAIL_FROM + '>',
+    'To: ' + to,
+    'Subject: Code OTP Voxzen Admin — ' + code,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    htmlBody
+  ];
+  const raw = msgLines.join('\r\n');
+  const encoded = Buffer.from(raw).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw: encoded })
+  });
+  if (!gmailRes.ok) {
+    const errText = await gmailRes.text();
+    throw new Error('Gmail send error: ' + errText);
+  }
+  return true;
+}
+
 app.post('/send-otp', express.json(), async (req, res) => {
-  const { to, code, expiry } = req.body;
+  if (res.headersSent) return;
+  const body = req.body || {};
+  const to = body.to;
+  const code = body.code;
+  const expiry = body.expiry || '10 min';
   if (!to || !code) return res.status(400).json({ error: 'Paramètres manquants' });
-  log('INFO', `[OTP] Envoi code ${code} vers ${to}`);
+  log('INFO', '[OTP] Envoi code ' + code + ' vers ' + to);
+  // Timeout de sécurité 20s
+  const timer = setTimeout(() => {
+    if (!res.headersSent) {
+      log('ERROR', '[OTP] Timeout 20s dépassé');
+      res.status(504).json({ error: 'Timeout email' });
+    }
+  }, 20000);
   try {
-    const accessToken = await getGmailAccessToken();
-    const html = `<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;">
-      <h2 style="color:#4f46e5;">⚡ Voxzen Admin</h2>
-      <p>Votre code de connexion :</p>
-      <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px;">${code}</div>
-      <p style="color:#6b7280;font-size:13px;">Valide jusqu'à ${expiry} — Ne partagez pas ce code.</p>
-    </div>`;
-    const raw = [
-      `From: Voxzen Admin <${GMAIL_FROM}>`,
-      `To: ${to}`,
-      `Subject: Code OTP Voxzen Admin — ${code}`,
-      `MIME-Version: 1.0`,
-      `Content-Type: text/html; charset=utf-8`,
-      ``,
-      html
-    ].join('\r\n');
-    const encoded = Buffer.from(raw).toString('base64')
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw: encoded })
-    });
-    if (gmailRes.ok) {
-      log('INFO', `[OTP] ✅ Code envoyé à ${to}`);
+    await sendOtpEmail(to, code, expiry);
+    clearTimeout(timer);
+    if (!res.headersSent) {
+      log('INFO', '[OTP] ✅ Code envoyé à ' + to);
       res.json({ ok: true });
-    } else {
-      const err = await gmailRes.text();
-      log('ERROR', `[OTP] Gmail error: ${err}`);
-      res.status(500).json({ error: err });
     }
   } catch(e) {
-    log('ERROR', `[OTP] Échec: ${e.message}`);
-    res.status(500).json({ error: e.message });
+    clearTimeout(timer);
+    log('ERROR', '[OTP] Echec: ' + e.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: e.message });
+    }
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v36-otp-fix sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v37-otp-robust sur port ${PORT}`));
