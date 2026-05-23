@@ -330,7 +330,7 @@ wss.on('connection', (ws, req) => {
   let transcript = [];
   let curAss     = '';
   let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
-  let cfg        = DEF_CFG;
+  let cfg        = null;
   let saved      = false;
   let callTimer  = null;
 
@@ -359,7 +359,7 @@ wss.on('connection', (ws, req) => {
         type: 'session.update',
         session: {
           type: 'realtime',
-          instructions: buildPrompt(cfg || DEF_CFG, callerNum),
+          instructions: buildPrompt(cfg || DEF_CFG(), callerNum),
           audio: {
             input: {
               format: { type: 'audio/pcmu' },
