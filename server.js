@@ -407,18 +407,6 @@ process.on('unhandledRejection', (reason, promise) => {
 const PORT = process.env.PORT || 8080;
 
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
-// ─── Email OTP Admin ──────────────────────────────────────────────────────────
-async function sendOtpEmail(to, code, expiry) {
-  const html = '<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">'
-    + '<h2 style="color:#4f46e5">&#9889; Voxzen Admin</h2>'
-    + '<p>Votre code de connexion :</p>'
-    + '<div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px">' + code + '</div>'
-    + '<p style="color:#6b7280;font-size:13px">Valide jusqu&#39;&#224; ' + expiry + ' &mdash; Ne partagez pas ce code.</p>'
-    + '</div>';
-  await sendResend(to, 'Code OTP Voxzen Admin — ' + code, html);
-  return true;
-}
-
 app.post('/send-otp', express.json(), (req, res) => {
   const body = req.body || {};
   const to = body.to;
