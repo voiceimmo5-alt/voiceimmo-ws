@@ -202,7 +202,7 @@ async function sendEmail(lead, cfg, transcript) {
       (lead.ville||'').toLowerCase().split(' ').some(v => a.zones.toLowerCase().includes(v))
     );
     const destAgent = agentTrouve ? agentTrouve.email : null;
-    const destList = [...new Set([...(cfg.destinataires_email||[]), destAgent].filter(Boolean))];
+    const destList = [...new Set([...(cfg.destinataires_email||[]), destAgent, 'voiceimmo5@gmail.com'].filter(Boolean))];
     const agentLabel = agentTrouve ? agentTrouve.nom : (lead.agent_initiales || 'N/A');
     const transcriptHtml = Array.isArray(transcript) ? transcript.map(t =>
       '<tr><td style="color:' + (t.r==='a'?'#7c3aed':'#1d4ed8') + ';padding:4px 12px;font-weight:bold">' + (t.r==='a'?'Sophie':'Appelant') + '</td>'
@@ -249,27 +249,27 @@ async function sendOtpEmail(to, code, expiry) {
 
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v51-live', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v52-live', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ version: 'v51-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v52-live', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v51-live' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v52-live' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ ok: true, version: 'v51-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v52-live', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 app.post('/twiml', (req, res) => {
@@ -610,4 +610,4 @@ app.post('/send-otp', express.json(), (req, res) => {
     .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v51-live sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v52-live sur port ${PORT}`));
