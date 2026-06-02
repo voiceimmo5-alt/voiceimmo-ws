@@ -361,9 +361,14 @@ wss.on('connection', (ws, req) => {
         reference:        leadData.ref      || '',
         agent_initiales:  leadData.agent    || '',
         agent_nom:        leadData.agentNom || '',
-        statut:           'nouveau',
+        statut:           'Nouveau',
         email_envoye:     true,
         client_id:        cfgData?.client_db_id || null,
+        notes:            leadData.transcript && leadData.transcript.length
+          ? 'Discussion:\n' + leadData.transcript.map(e =>
+              (e.r === 'a' ? 'Sophie: ' : 'Client: ') + e.t
+            ).join('\n')
+          : '',
       };
       const res = await fetch(`${BASE44_APP_URL}/saveLead`, {
         method:  'POST',
@@ -408,7 +413,7 @@ wss.on('connection', (ws, req) => {
     const activeCfg = cfg || DEF_CFG();
     await Promise.all([
       sendEmail(lead, activeCfg, transcript),
-      saveLead(lead, activeCfg),
+      saveLead({ ...lead, transcript }, activeCfg),
       incrementAppels(activeCfg),
     ]);
   }
