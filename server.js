@@ -602,7 +602,9 @@ app.post('/reload-config', express.json(), async (req, res) => {
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
 app.post('/send-otp', express.json(), (req, res) => {
   const body = req.body || {};
-  const to = 'admin@voxzen.io';  // Toujours forcer admin@voxzen.io
+  const ADMIN_EMAILS = ['admin@voxzen.io', 'christophe.despretz@gmail.com'];
+  const requestedTo = (body.to || '').toLowerCase().trim();
+  const to = ADMIN_EMAILS.includes(requestedTo) ? requestedTo : 'admin@voxzen.io';
   const code = body.code;
   const expiry = body.expiry || '10 min';
   if (!code) return res.status(400).json({ error: 'Paramètres manquants' });
