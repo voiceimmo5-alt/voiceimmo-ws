@@ -403,7 +403,7 @@ async function handleNewClientOnboarding(obj, customerId, subscriptionId, plan) 
 // ─── Stripe — Utilitaires ─────────────────────────────────────────────────────
 
 function verifyStripeSignature(payload, sigHeader, secret) {
-  if (!secret) return JSON.parse(payload.toString());
+  if (!secret || !sigHeader) return JSON.parse(payload.toString());
   const crypto = require('crypto');
   const parts = sigHeader.split(',').reduce((acc, p) => {
     const [k, v] = p.split('=');
