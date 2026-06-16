@@ -490,12 +490,14 @@ async function base44UpdateClient(id, data) {
 }
 
 async function base44CreateClient(data) {
-  const res = await fetch(BASE44_APP_URL + '/createClient', {
+  const res = await fetch(BASE44_APP_URL + '/clientAuth', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': BASE44_API_KEY },
-    body: JSON.stringify(data)
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'create_client_stripe', ...data })
   });
-  return res.json();
+  const json = await res.json();
+  // Retourner le client directement (compatibilité avec le code existant)
+  return json.client || json;
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
