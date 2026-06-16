@@ -2,286 +2,243 @@
 const http      = require('http');
 const express   = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
+const https_mod = require('https');
 
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 
+// ─── Stripe Webhook — raw body AVANT express.json() ───────────────────────
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+const STRIPE_SECRET_KEY     = process.env.STRIPE_SECRET_KEY     || '';
+
+app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  // ── Vérifier la signature Stripe ──────────────────────────────────────
+  try {
+    event = verifyStripeSignature(req.body, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('[STRIPE] ❌ Signature invalide:', err.message);
+    return res.status(400).send('Webhook signature invalide');
+  }
+
+  console.log('[STRIPE] Event reçu:', event.type);
+
+  try {
+    if (event.type === 'invoice.payment_succeeded') {
+      await handlePaymentSucceeded(event.data.object);
+    } else if (event.type === 'invoice.payment_failed') {
+      await handlePaymentFailed(event.data.object);
+    } else if (event.type === 'customer.subscription.deleted') {
+      await handleSubscriptionDeleted(event.data.object);
+    }
+  } catch (err) {
+    console.error('[STRIPE] ❌ Erreur traitement event:', err.message);
+  }
+
+  res.json({ received: true });
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ─── Buffer de logs circulaire ───────────────────────────────────────────────
+
+// ─── Buffer de logs circulaire (100 dernières lignes) ────────────────────────
 const LOG_BUFFER = [];
-const MAX_LOGS = 200;
-const origLog   = console.log;
-const origError = console.error;
+const MAX_LOGS = 100;
+const origConsoleLog = console.log;
+const origConsoleError = console.error;
 function pushLog(level, args) {
   const line = { ts: Date.now(), level, msg: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') };
   LOG_BUFFER.push(line);
   if (LOG_BUFFER.length > MAX_LOGS) LOG_BUFFER.shift();
 }
-console.log   = (...a) => { origLog(...a);   pushLog('info',  a); };
-console.error = (...a) => { origError(...a); pushLog('error', a); };
+console.log   = (...a) => { origConsoleLog(...a);   pushLog('info',  a); };
+console.error = (...a) => { origConsoleError(...a); pushLog('error', a); };
 
-// ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
-const OAI_MODEL          = process.env.OAI_MODEL          || 'gpt-realtime-2';
-const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
-const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
-const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
-const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
-const BASE44_PROXY_URL   = 'https://fr-2758ee0c.base44.app/functions/getClientConfig';
-const BASE44_API_KEY     = process.env.BASE44_API_KEY     || '';
-const BASE44_APP_URL     = 'https://fr-2758ee0c.base44.app/functions';
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || '';
+const TWILIO_AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN  || '';
+const BASE44_SERVICE_TOKEN = process.env.BASE44_SERVICE_TOKEN || '';
+const BASE44_API_URL     = process.env.BASE44_API_URL || 'https://fr-2758ee0c.base44.app';
 
-// ─── Config clients (dynamique depuis Base44) ────────────────────────────────
-// Fallback hardcodé si le proxy est indisponible
-const CONFIGS_FALLBACK = {
-  '+33939245959': {
-    nom_agence:          'LEONE IMMOBILIER',
-    client_db_id:        '6a0cdf1388a8c7697ae8a452',
-    voix:                'coral',
-    site_internet:       'https://www.leone-immobilier.fr',
-    message_accueil:     "Bonjour et bienvenue chez Leone Immobilier, comment puis-je vous aider ?",
-    instructions_ia:     null,
-    agents_arr: [
-      { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite, charly' },
-      { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com',  zones: 'villette de vienne, vienne, roussillon, grigny' },
-      { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',   zones: 'villefontaine, nord rhone, beaujolais, villefranche' }
-    ],
-    destinataires_email: ['leone.immobilier@gmail.com', 'christophe.despretz@gmail.com'],
-  },
-  '+33939247019': {
-    nom_agence:          'LEONE IMMOBILIER (STAGING)',
-    client_db_id:        '6a057fa03ad6f7b2ebf4b79e',
-    voix:                'coral',
-    site_internet:       'https://www.leone-immobilier.fr',
-    message_accueil:     "Bonjour, ceci est le serveur de test Leone Immobilier. Comment puis-je vous aider ?",
-    instructions_ia:     null,
-    agents_arr: [
-      { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite' },
-      { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com',  zones: 'villette de vienne, vienne, roussillon' },
-      { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',   zones: 'villefontaine, nord rhone, beaujolais' }
-    ],
-    destinataires_email: ['christophe.despretz@gmail.com'],
-  }
+// ─── Config Leone Immobilier (fallback hardcodé) ──────────────────────────
+const DEF_CFG = {
+  nom_agence: 'LEONE IMMOBILIER',
+  client_db_id: '6a0cdf1388a8c7697ae8a452', // ID prod Leone Immobilier
+  voix: 'coral',
+  message_accueil: "Bonjour et bienvenue à l'agence Leone immobilier, comment puis-je vous aider ?",
+  agents_arr: [
+    { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite' },
+    { nom: 'Kenny', email: 'kenny.leoneimmobilier@gmail.com',  zones: 'villette de vienne, vienne, roussillon' },
+    { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',   zones: 'villefontaine, nord rhone, beaujolais' }
+  ],
+  destinataires_email: 'leone.immobilier@gmail.com',
+  numero_actuel: '+33939245959',
 };
 
-// Cache dynamique — mis à jour depuis Base44 toutes les 5 minutes
-let CONFIGS = { ...CONFIGS_FALLBACK };
-
-function mapClientToConfig(c) {
-  // Convertit un enregistrement Client Base44 en config voicebot
-  const num = c.numero_actuel || '';
-  const fallback = CONFIGS_FALLBACK[num] || {};
-  let agents_arr = fallback.agents_arr || [];
-  if (c.agents && typeof c.agents === 'string') {
-    try { agents_arr = JSON.parse(c.agents); } catch(e) {}
-  } else if (Array.isArray(c.agents)) {
-    agents_arr = c.agents;
-  }
-  let dest = fallback.destinataires_email || [];
-  if (c.destinataires_email) {
-    if (typeof c.destinataires_email === 'string') {
-      dest = c.destinataires_email.split(',').map(e => e.trim()).filter(Boolean);
-    } else if (Array.isArray(c.destinataires_email)) {
-      dest = c.destinataires_email;
-    }
-  }
-  return {
-    nom_agence:          c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
-    client_db_id:        c.id || fallback.client_db_id,
-    voix:                c.voix || fallback.voix || 'coral',
-    site_internet:       c.site_internet || fallback.site_internet || '',
-    message_accueil:     c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
-    instructions_ia:     c.instructions_ia || null,
-    agents_arr,
-    destinataires_email: dest,
-  };
+// ─── Raccrocher via Twilio REST API ──────────────────────────────────────────
+async function hangupCall(callSid) {
+  if (!callSid || callSid === 'unknown' || !TWILIO_ACCOUNT_SID) return;
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`;
+    const body = 'Status=completed';
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const https = require('https');
+    await new Promise((resolve) => {
+      const req = https.request(url, { method: 'POST', headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } }, (res) => { res.resume(); res.on('end', resolve); });
+      req.on('error', () => resolve());
+      req.write(body);
+      req.end();
+    });
+    console.log('[TWILIO] Appel raccroché:', callSid);
+  } catch(e) { console.error('[TWILIO] Erreur hangup:', e.message); }
 }
 
-async function refreshConfigs() {
+// ─── Charger config client depuis Base44 ─────────────────────────────────
+async function getConfig(numTwilio) {
   try {
-    const url = BASE44_PROXY_URL;
+    const filterStr = encodeURIComponent(JSON.stringify({numero_actuel: numTwilio}));
+    const url = `${BASE44_API_URL}/api/entities/Client?filter=${filterStr}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}` }
+    });
+    if (!res.ok) throw new Error(`Base44 ${res.status}`);
+    const data = await res.json();
+    const client = Array.isArray(data) ? data[0] : (data.results?.[0] || null);
+    if (!client) return DEF_CFG;
+
+    let agents_arr = DEF_CFG.agents_arr;
+    try {
+      const arr = typeof client.agents === 'string' ? JSON.parse(client.agents) : client.agents;
+      if (Array.isArray(arr) && arr.length > 0) agents_arr = arr;
+    } catch(_) {}
+
+    const VMAP = { coral:'coral', shimmer:'shimmer', alloy:'alloy', echo:'echo', verse:'verse', ash:'ash', sage:'sage', ballad:'ballad' };
+    const voix = VMAP[(client.voix||'coral').toLowerCase()] || 'coral';
+
+    return {
+      nom_agence: client.nom_entreprise || DEF_CFG.nom_agence,
+      client_db_id: client.id || DEF_CFG.client_db_id,
+      voix,
+      message_accueil: client.message_accueil || DEF_CFG.message_accueil,
+      agents_arr,
+      destinataires_email: client.destinataires_email || DEF_CFG.destinataires_email,
+      numero_actuel: numTwilio,
+    };
+  } catch(e) {
+    console.error('[CFG] Erreur chargement config:', e.message, '→ fallback');
+    return DEF_CFG;
+  }
+}
+
+// ─── Incrémenter compteur d'appels ────────────────────────────────────────
+async function incrAppels(clientDbId) {
+  try {
+    const url = `${BASE44_API_URL}/api/entities/Client/${clientDbId}`;
+    // D'abord récupérer la valeur actuelle
+    const r1 = await fetch(url, { headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}` } });
+    const cur = await r1.json();
+    const nb = (cur.appels_mois || 0) + 1;
+    await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appels_mois: nb, appels_total: (cur.appels_total||0)+1 })
+    });
+    console.log(`[CFG] Appels incrémentés → ${nb}`);
+  } catch(e) { console.error('[CFG] incrAppels err:', e.message); }
+}
+
+// ─── Sauvegarder lead ─────────────────────────────────────────────────────
+async function saveLead(lead, cfg, transcript) {
+  console.log('[LEAD] Tentative sauvegarde:', JSON.stringify({nom:lead.nom, tel:lead.tel, besoin:lead.besoin}));
+  try {
+    const url = `${BASE44_API_URL}/api/entities/Lead`;
+    const body = {
+      nom: lead.nom || 'Inconnu',
+      telephone: lead.tel || '',
+      besoin: lead.besoin || '',
+      agent_initiales: lead.agent || '',
+      agent_nom: lead.agentNom || '',
+      statut: 'nouveau',
+      notes: `client_id:${(cfg.client_db_id||'').toLowerCase()}\nVille: ${lead.ville||''} | Prix: ${lead.prix||''} | Ref: ${lead.ref||''}\n---\n` +
+             transcript.map(t => `${t.r==='a'?'Sophie':'Appelant'}: ${t.t}`).join('\n')
+    };
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(8000)
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const clients = data.clients || [];
-    const newConfigs = { ...CONFIGS_FALLBACK };
-    for (const c of clients) {
-      if (c.numero_actuel) {
-        newConfigs[c.numero_actuel] = mapClientToConfig(c);
-      }
-    }
-    CONFIGS = newConfigs;
-    console.log(`[CFG] ✅ Config rechargée depuis Base44 — ${clients.length} client(s): ${Object.keys(newConfigs).join(', ')}`);
-  } catch(e) {
-    console.warn('[CFG] ⚠️ Impossible de charger Base44, config fallback utilisée:', e.message);
-  }
+    if (res.ok) console.log('[LEAD] ✅ Lead sauvegardé');
+    else console.error('[LEAD] Erreur save:', res.status, await res.text());
+  } catch(e) { console.error('[LEAD] Exception:', e.message); }
 }
 
-// Charger au démarrage puis toutes les 5 minutes
-refreshConfigs();
-setInterval(refreshConfigs, 5 * 60 * 1000);
-
-const DEF_CFG = () => CONFIGS['+33939245959'] || Object.values(CONFIGS)[0];
-
-function getConfig(numTwilio) {
-  const key = numTwilio.startsWith('+') ? numTwilio : `+${numTwilio}`;
-  const cfg = CONFIGS[key];
-  if (cfg) { console.log(`[CFG] Config trouvée pour ${key}: ${cfg.nom_agence}`); return cfg; }
-  console.log(`[CFG] Numéro ${key} inconnu → fallback`);
-  return DEF_CFG();
-}
-
-
-// ─── Gmail OAuth2 — obtenir un access token ──────────────────────────────────
-async function getGmailAccessToken() {
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id:     GMAIL_CLIENT_ID,
-      client_secret: GMAIL_CLIENT_SECRET,
-      refresh_token: GMAIL_REFRESH_TOKEN,
-      grant_type:    'refresh_token'
-    })
-  });
-  const data = await res.json();
-  if (!data.access_token) throw new Error('Gmail token error: ' + JSON.stringify(data));
-  return data.access_token;
-}
-
-// ─── Envoyer email via Gmail API ─────────────────────────────────────────────
-async function sendGmail(to, subject, html) {
-  const accessToken = await getGmailAccessToken();
-  const toArr = Array.isArray(to) ? to : [to];
-  const boundary = 'boundary_' + Date.now();
-  // Encoder le sujet en UTF-8 base64 pour éviter les caractères corrompus
-  const subjectEncoded = '=?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=';
-  const raw = [
-    'From: VoiceImmo <' + GMAIL_FROM + '>',
-    'To: ' + toArr.join(', '),
-    'Subject: ' + subjectEncoded,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: quoted-printable',
-    '',
-    html
-  ].join('\r\n');
-  const encoded = Buffer.from(raw, 'utf8').toString('base64url');
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + accessToken,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ raw: encoded })
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error('Gmail send error ' + res.status + ': ' + err);
-  }
-  return true;
-}
-
-// ─── Email notification lead ──────────────────────────────────────────────────
-async function sendEmail(lead, cfg, transcript) {
-  if (!GMAIL_CLIENT_ID || !GMAIL_REFRESH_TOKEN) {
-    console.log('[EMAIL] Credentials Gmail absents → email ignoré');
-    return false;
-  }
+// ─── Envoyer email via Base44 Gmail function ──────────────────────────────
+async function sendEmail(lead, cfg) {
   try {
-    const agentTrouve = (cfg.agents || []).find(a =>
-      (lead.agent_initiales||'').toLowerCase().split('/').map(s=>s.trim()).some(ini => a.nom.split(' ')[0].toLowerCase() === ini) ||
-      (lead.ville||'').toLowerCase().split(' ').some(v => a.zones.toLowerCase().includes(v))
-    );
-    const destAgent = agentTrouve ? agentTrouve.email : null;
-    const destList = [...new Set([...(cfg.destinataires_email||[]), destAgent, 'voiceimmo5@gmail.com'].filter(Boolean))];
-    const agentLabel = agentTrouve ? agentTrouve.nom : (lead.agent_initiales || 'N/A');
-    const transcriptHtml = Array.isArray(transcript) ? transcript.map(t =>
-      '<tr><td style="color:' + (t.r==='a'?'#7c3aed':'#1d4ed8') + ';padding:4px 12px;font-weight:bold">' + (t.r==='a'?'Sophie':'Appelant') + '</td>'
-      + '<td style="padding:4px 12px">' + t.t + '</td></tr>'
-    ).join('') : '';
-    const html = '<div style="font-family:sans-serif;max-width:600px;margin:0 auto">'
-      + '<div style="background:#4f46e5;color:#fff;padding:24px;border-radius:12px 12px 0 0">'
-      + '<h2 style="margin:0">&#127968; Nouveau lead &mdash; ' + (cfg.nom_agence||'VoiceImmo') + '</h2>'
-      + '</div>'
-      + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
-      + '<table style="width:100%;border-collapse:collapse">'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Nom</td><td style="padding:8px">' + (lead.nom||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">T&eacute;l&eacute;phone</td><td style="padding:8px">' + (lead.telephone||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Besoin</td><td style="padding:8px">' + (lead.besoin||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Ville</td><td style="padding:8px">' + (lead.ville||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Prix</td><td style="padding:8px">' + (lead.prix||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">R&eacute;f&eacute;rence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
-      + '</table>'
-      + (transcriptHtml ? '<h3 style="margin-top:24px">Transcription</h3><table style="width:100%;border-collapse:collapse;font-size:14px">' + transcriptHtml + '</table>' : '')
-      + '</div></div>';
-    for (const dest of destList) {
-      await sendGmail([dest], 'Nouveau lead VoiceImmo \u2014 ' + (lead.nom||'Inconnu'), html);
-    }
-    console.log('[EMAIL] \u2705 Email envoy\u00e9 via Gmail \u00e0:', destList.join(', '));
-    return true;
-  } catch(e) {
-    console.error('[EMAIL] \u274c Erreur Gmail:', e.message);
-    return false;
-  }
+    const url = `${BASE44_API_URL}/functions/sendLeadEmail`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${BASE44_SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead, cfg })
+    });
+    console.log('[EMAIL] ✅ Email envoyé');
+  } catch(e) { console.error('[EMAIL] err:', e.message); }
 }
 
-// ─── Email OTP Admin ──────────────────────────────────────────────────────────
-async function sendOtpEmail(to, code, expiry) {
-  const html = '<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">'
-    + '<h2 style="color:#4f46e5">&#9889; Voxzen Admin</h2>'
-    + '<p>Votre code de connexion :</p>'
-    + '<div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px">' + code + '</div>'
-    + '<p style="color:#6b7280;font-size:13px">Valide jusqu&#39;&#224; ' + expiry + ' &mdash; Ne partagez pas ce code.</p>'
-    + '</div>';
-  await sendGmail(to, 'Code OTP Voxzen Admin - ' + code, html);
-  return true;
-}
-
-
-// ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v53-leads', service: 'VoiceImmo WS' }));
+// ─── Endpoints HTTP ───────────────────────────────────────────────────────
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v25-clean', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
-  let oaiOk = false, gmailOk = false;
-  try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
-  try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ version: 'v53-leads', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  const hasKey = !!OPENAI_API_KEY;
+  let oaiOk = false;
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
+    oaiOk = r.ok;
+  } catch(_) {}
+  res.json({ version: 'v25-clean', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
-  const n     = parseInt(req.query.n    || '50');
-  const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v53-leads' });
+  const n = parseInt(req.query.n || '50');
+  const since = parseInt(req.query.since || '0');
+  const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
+  res.json({ logs, serverTime: Date.now(), version: 'v25-clean' });
 });
 
 app.get('/stats', async (req, res) => {
-  let oaiOk = false, gmailOk = false;
-  try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
-  try { await getGmailAccessToken(); gmailOk=true; } catch(e) {}
-  res.json({ ok: true, version: 'v53-leads', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  let oaiOk = false;
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
+    oaiOk = r.ok;
+  } catch(_) {}
+  res.json({
+    ok: true,
+    version: 'v25-clean',
+    uptime: Math.floor(process.uptime()),
+    memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+    oaiOk,
+    node: process.version,
+    serverTime: Date.now(),
+    activeConnections: wss.clients.size,
+  });
 });
 
 app.post('/twiml', (req, res) => {
-  const caller = req.body.From   || req.body.Caller || '';
-  const to     = req.body.To     || req.body.Called || '';
-  const sid    = req.body.CallSid|| '';
+  const caller = req.body.From || req.body.Caller || '';
+  const to     = req.body.To   || req.body.Called || '';
+  const sid    = req.body.CallSid || '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
+
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://ws-staging.voiceimmo.fr">
+    <Stream url="wss://voiceimmo-ws-production.up.railway.app">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
@@ -290,160 +247,65 @@ app.post('/twiml', (req, res) => {
 </Response>`);
 });
 
-// ─── Prompt Sophie ────────────────────────────────────────────────────────────
-function buildPrompt(c, callerNum) {
-  // Priorité 1 : instructions_ia personnalisées depuis la base de données
-  if (c.instructions_ia && c.instructions_ia.trim()) {
-    const prompt = c.instructions_ia
-      .replace(/\{\{CALLER\}\}/g, callerNum)
-      .replace(/\{\{NUM\}\}/g, callerNum);
-    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum);
-    return prompt;
-  }
-  // Priorité 2 : prompt générique fallback
-  console.log('[PROMPT] ⚠️ Fallback prompt générique pour', c.nom_agence);
-  const agentsStr = (c.agents_arr || []).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
-  return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
-LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
-
-RÈGLES ABSOLUES :
-- Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
-- Tu ne donnes pas de conseils juridiques ou financiers
-- Tu collectes les informations dans cet ordre :
-  1. Prénom et nom de l'appelant
-  2. Nature du besoin (achat, vente, location, estimation)
-  3. Ville / secteur du bien
-  4. Budget approximatif
-  5. Référence du bien si disponible
-  6. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
-- Après collecte complète : "Merci [Prénom], un agent va vous rappeler très rapidement. Au revoir !"
-
-AGENTS ET ZONES :
-${agentsStr}
-
-Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
-Numéro détecté : ${callerNum}`;
-}
-
-
-// ─── WebSocket Handler ────────────────────────────────────────────────────────
+// ─── WebSocket Handler (Twilio Media Streams) ─────────────────────────────
 wss.on('connection', (ws, req) => {
   console.log('[WS] ✅ Connexion depuis', req.socket.remoteAddress);
 
-  let streamSid  = '';
-  let callSid    = '';
-  let oai        = null;
-  let ready      = false;
-  let queue      = [];
+  let streamSid = '';
+  let oai       = null;
+  let ready     = false;
+  let queue     = [];
   let transcript = [];
-  let curAss     = '';
-  let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
-  let cfg        = null;
-  let saved      = false;
-  let accueilDone = false;
-  let callTimer  = null;
+  let curAss    = '';
+  let lead      = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
+  let cfg       = null;
+  let saved     = false;
+  let callTimer = null;
+  let callSid = 'unknown';
 
+  // ─── Raccrocher proprement ──────────────────────────────────────────────
   function hangup() {
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
     if (oai && oai.readyState === WebSocket.OPEN) oai.close();
   }
 
-
-  // ─── Sauvegarde lead en base ────────────────────────────────────────────────
-  async function saveLead(leadData, cfgData) {
-    try {
-      const payload = {
-        nom:              leadData.nom      || 'Inconnu',
-        telephone:        leadData.tel      || 'Inconnu',
-        besoin:           leadData.besoin   || '',
-        ville:            leadData.ville    || '',
-        prix:             leadData.prix     || '',
-        reference:        leadData.ref      || '',
-        agent_initiales:  leadData.agent    || '',
-        agent_nom:        leadData.agentNom || '',
-        statut:           'Nouveau',
-        email_envoye:     true,
-        client_id:        cfgData?.client_db_id || null,
-        notes:            leadData.transcript && leadData.transcript.length
-          ? 'Discussion:\n' + leadData.transcript.map(e =>
-              (e.r === 'a' ? 'Sophie: ' : 'Client: ') + e.t
-            ).join('\n')
-          : '',
-      };
-      const res = await fetch(`${BASE44_APP_URL}/saveLead`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(payload),
-        signal:  AbortSignal.timeout(8000)
-      });
-      const data = await res.json();
-      if (data.ok) {
-        console.log('[LEAD] ✅ Lead sauvegardé en base, id:', data.id);
-      } else {
-        console.warn('[LEAD] ⚠️ Erreur saveLead:', JSON.stringify(data));
-      }
-    } catch(e) {
-      console.warn('[LEAD] ⚠️ Exception saveLead:', e.message);
-    }
-  }
-
-  // ─── Incrémentation compteurs appels ────────────────────────────────────────
-  async function incrementAppels(cfgData) {
-    try {
-      const res = await fetch(`${BASE44_APP_URL}/incrementAppels`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ client_db_id: cfgData?.client_db_id }),
-        signal:  AbortSignal.timeout(8000)
-      });
-      const data = await res.json();
-      if (data.ok) {
-        console.log('[APPEL] ✅ Compteurs incrémentés →', `total:${data.appels_total} mois:${data.appels_mois}`);
-      } else {
-        console.warn('[APPEL] ⚠️ Erreur incrementAppels:', JSON.stringify(data));
-      }
-    } catch(e) {
-      console.warn('[APPEL] ⚠️ Exception incrementAppels:', e.message);
-    }
-  }
-
+  // ─── Flush lead à la fin de l'appel ────────────────────────────────────
   async function flush() {
     if (saved) return; saved = true;
     hangup();
-    const activeCfg = cfg || DEF_CFG();
-    await Promise.all([
-      sendEmail(lead, activeCfg, transcript),
-      saveLead({ ...lead, transcript }, activeCfg),
-      incrementAppels(activeCfg),
-    ]);
+    if (cfg) { // on sauvegarde même sans numéro
+      await saveLead(lead, cfg, transcript);
+      await sendEmail(lead, cfg);
+      await incrAppels(cfg.client_db_id);
+    }
   }
 
+  // ─── Connecter OpenAI Realtime ──────────────────────────────────────────
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
       ['realtime'],
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
     );
 
     oai.on('open', () => {
       console.log('[OAI] Connecté → session.update');
+      const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
+      const voix    = cfg?.voix || 'coral';
+
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
-          instructions: buildPrompt(cfg || DEF_CFG(), callerNum),
-          audio: {
-            input: {
-              format: { type: 'audio/pcmu' },
-              transcription: { model: 'whisper-1', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
-            },
-            output: {
-              format: { type: 'audio/pcmu' },
-              voice: cfg?.voix || 'coral'
-            }
-          }
+          modalities: ['text', 'audio'],
+          instructions: buildPrompt(cfg || DEF_CFG, callerNum),
+          voice: voix,
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          input_audio_transcription: { model: 'whisper-1', language: 'fr' },
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
+          temperature: 0.7,
+          max_response_output_tokens: 200,
         }
       }));
     });
@@ -454,167 +316,410 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        const accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
+        const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
+
+        // Drainer queue audio Twilio reçu avant que OAI soit prêt
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
+
+        // Forcer Sophie à parler en premier
         oai.send(JSON.stringify({
           type: 'response.create',
-          response: { instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"` }
+          response: {
+            modalities: ['text', 'audio'],
+            instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"`,
+          }
         }));
       }
 
-      if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
-        if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
+      // Audio généré par OAI → renvoyer à Twilio
+      if (m.type === 'response.audio.delta' && m.delta && streamSid) {
+        if (ws.readyState === 1) { // 1 = OPEN
+          ws.send(JSON.stringify({
+            event: 'media',
+            streamSid,
+            media: { payload: m.delta }
+          }));
         }
       }
 
+      // Transcription réponse Sophie
       if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
       if (m.type === 'response.audio_transcript.done' && curAss) {
         transcript.push({ r: 'a', t: curAss });
         console.log(`[IA] "${curAss.slice(0, 100)}"`);
-        // Détection phrase de fin → raccrocher après 2s
-        const finPhrases = /au revoir|à très bientôt|bientôt|bonne journée|bonne soirée|rappeler très rapidement/i;
-        if (finPhrases.test(curAss)) {
-          console.log('[FIN] Phrase de fin détectée → raccrochage dans 5s');
-          setTimeout(async () => {
-            console.log('[FIN] → fermeture WebSocket (méthode principale)');
-            try { ws.close(); } catch(_) {}
-            try { if (oai) oai.close(); } catch(_) {}
-            if (callSid) {
-              try {
-                const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-                await fetch(`https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: 'Status=completed'
-                });
-                console.log('[FIN] REST Twilio envoyé');
-              } catch(e) { console.warn('[FIN] REST error:', e.message); }
-            }
-            await flush();
-          }, 5000);
+        // Raccrocher si Sophie dit "à très bientôt" (fin de conversation)
+        if (/bient.t/i.test(curAss)) {
+          console.log('[IA] Fin détectée → raccrocher dans 3s');
+          setTimeout(() => { hangupCall(callSid); flush(); }, 3000);
         }
         curAss = '';
       }
 
-      // Après le message d'accueil → Sophie enchaîne directement sur l'étape 1
-      if (m.type === 'response.done' && !accueilDone) {
-        accueilDone = true;
-        console.log('[OAI] Accueil terminé → lancement étape 1 (demande de nom)');
-        oai.send(JSON.stringify({
-          type: 'response.create',
-          response: { instructions: 'Enchaîne IMMÉDIATEMENT sur la première étape du script : demande le prénom et le nom de l\'appelant.' }
-        }));
-      }
-
+      // Transcription appelant
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
         transcript.push({ r: 'u', t: m.transcript });
         console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
         parseLeadInfo(m.transcript);
       }
 
-      if (m.type === 'error') console.error('[OAI] Erreur:', JSON.stringify(m.error));
+      if (m.type === 'error') {
+        console.error('[OAI] Erreur:', JSON.stringify(m.error));
+      }
     });
 
     oai.on('error', (e) => console.error('[OAI] WS Error:', e.message));
     oai.on('close', (code) => console.log('[OAI] Fermé, code:', code));
   }
 
+  // ─── Parser les infos du lead depuis la transcription ──────────────────
   function parseLeadInfo(text) {
-    if (!lead.nom && /je m.appelle|c.est |mon nom est/i.test(text)) {
+    const t = text.toLowerCase();
+    // Basique — le vrai parsing est fait par le LLM dans le transcript
+    if (!lead.nom && /je m.appelle|c.est |mon nom est/i.test(t)) {
       const m = text.match(/(?:je m.appelle|c.est|mon nom est)\s+([A-ZÀ-Ý][a-zà-ý]+(?:\s+[A-ZÀ-Ý][a-zà-ý]+)*)/i);
       if (m) lead.nom = m[1];
     }
-    if (!lead.besoin && /acheter|achat|vendre|vente|louer|location|estim/i.test(text)) {
-      const m = text.match(/(acheter|achat|vendre|vente|louer|location|estimation)/i);
-      if (m) lead.besoin = m[1];
-    }
-    if (!lead.ville) {
-      const m = text.match(/(?:à|sur|secteur|ville de|commune de)\s+([A-ZÀ-Ý][a-zà-ý\-]+(?:\s+[A-ZÀ-Ý][a-zà-ý\-]+)*)/i);
-      if (m) lead.ville = m[1];
-    }
-    if (!lead.prix) {
-      const m = text.match(/(\d[\d\s]*(?:euros?|€|k€|000))/i);
-      if (m) lead.prix = m[1];
-    }
   }
 
+  // ─── Prompt Sophie ────────────────────────────────────────────────────────
+  function buildPrompt(c, callerNum) {
+    const agentsStr = (c.agents_arr||[]).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
+    return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
+LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
+RÈGLES ABSOLUES :
+- Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
+- Tu ne donnes pas de conseils juridiques ou financiers
+- Tu collectes les informations suivantes dans cet ordre :
+  1. Ville / secteur du bien
+  2. Budget
+  3. Prénom et nom de l'appelant
+  4. Confirmer le numéro (${callerNum})
+- Après collecte : "Merci, un agent va vous rappeler rapidement. Au revoir !"
+
+AGENTS ET ZONES :
+${agentsStr}
+
+Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
+Numéro de l'appelant : ${callerNum}`;
+  }
+
+  // ─── Handler messages Twilio ──────────────────────────────────────────────
   ws.on('message', async (data) => {
     let m;
     try { m = JSON.parse(data); } catch(_) { return; }
 
-    if (m.event === 'start') {
+    if (m.event === 'connected') {
+      console.log('[WS] Event: connected');
+    }
+
+    else if (m.event === 'start') {
       streamSid    = m.start?.streamSid || '';
       const params = m.start?.customParameters || {};
-      callSid      = params.sid    || params.CallSid || m.start?.callSid || '';
+      // Récupérer caller depuis plusieurs sources possibles
       const caller = params.caller || params.From || m.start?.from || '';
       const to     = params.to     || params.To   || m.start?.to   || '';
-      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to}`);
+      callSid      = params.sid    || m.start?.callSid || '';
+
+      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to} params=${JSON.stringify(params)}`);
+
+      // Format numéro appelant pour lecture
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
-      cfg = getConfig(to || '');
+
+      // Charger config client
+      cfg = await getConfig(to || '');
+      console.log(`[CFG] Config chargée: ${cfg.nom_agence}`);
+
+      // Démarrer OAI
       connectOAI(lead.tel);
-      callTimer = setTimeout(() => { console.log('[TIMER] 2min → raccrocher'); hangup(); }, 120000);
+
+      // Timer 2 minutes max
+      callTimer = setTimeout(() => {
+        console.log('[TIMER] 2min écoulées → raccrocher');
+        hangup();
+      }, 120000);
     }
+
     else if (m.event === 'media' && m.media?.payload) {
+      const b64 = m.media.payload;
       if (oai && oai.readyState === WebSocket.OPEN && ready) {
-        oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
+        oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
       } else if (oai) {
-        queue.push(m.media.payload);
+        queue.push(b64);
       }
     }
+
     else if (m.event === 'stop') {
       console.log(`[WS] STOP — ${transcript.length} échanges`);
       await flush();
     }
   });
 
-  ws.on('close', async () => { console.log('[WS] Connexion fermée'); await flush(); });
+  ws.on('close', async () => {
+    console.log('[WS] Connexion fermée');
+    await flush();
+  });
+
   ws.on('error', (e) => console.error('[WS] Erreur:', e.message));
 });
 
 
-// ─── Protection globale contre les crashes ──────────────────────────────────
-process.on('uncaughtException', (err) => {
-  console.error('[CRASH] uncaughtException:', err.message, err.stack);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[CRASH] unhandledRejection:', reason);
-});
+// ══════════════════════════════════════════════════════════════════════════════
+// ─── STRIPE — Fonctions utilitaires ──────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
 
+// Vérification signature Stripe (sans SDK — crypto natif Node)
+function verifyStripeSignature(payload, sigHeader, secret) {
+  const crypto = require('crypto');
+  if (!sigHeader || !secret) throw new Error('Signature ou secret manquant');
+  const parts = sigHeader.split(',').reduce((acc, p) => {
+    const [k, v] = p.split('=');
+    acc[k] = v;
+    return acc;
+  }, {});
+  const ts = parts.t;
+  const v1 = parts.v1;
+  if (!ts || !v1) throw new Error('Format signature invalide');
+  // Tolérance 5 minutes
+  if (Math.abs(Date.now() / 1000 - parseInt(ts)) > 300) throw new Error('Timestamp trop ancien');
+  const signed = `${ts}.${payload.toString()}`;
+  const expected = crypto.createHmac('sha256', secret).update(signed).digest('hex');
+  if (expected !== v1) throw new Error('Signature ne correspond pas');
+  return JSON.parse(payload.toString());
+}
+
+// Appel API Stripe REST
+async function stripeRequest(method, path, params) {
+  return new Promise((resolve, reject) => {
+    const body = params ? new URLSearchParams(params).toString() : '';
+    const opts = {
+      hostname: 'api.stripe.com',
+      path: `/v1/${path}`,
+      method,
+      headers: {
+        'Authorization': `Basic ${Buffer.from(STRIPE_SECRET_KEY + ':').toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body),
+      }
+    };
+    const req = https_mod.request(opts, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch(e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+// Trouver le client Voxzen par stripe_customer_id
+async function findClientByStripeId(stripeCustomerId) {
+  const r = await base44Request('filter', 'Client', { stripe_customer_id: stripeCustomerId });
+  return r?.records?.[0] || null;
+}
+
+// Appel Base44 API
+async function base44Request(action, entity, query) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ action, entity, ...query });
+    const opts = {
+      hostname: BASE44_API_URL.replace('https://', '').replace('http://', '').split('/')[0],
+      path: '/api/entities',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${BASE44_SERVICE_TOKEN}`,
+        'Content-Length': Buffer.byteLength(body),
+      }
+    };
+    const req = https_mod.request(opts, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch(e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+// Envoyer email via Resend
+async function sendStripeEmail(to, subject, html) {
+  const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      from: 'Voxzen <facturation@voxzen.io>',
+      to: Array.isArray(to) ? to : [to],
+      cc: ['voiceimmo5@gmail.com'],
+      subject,
+      html,
+    });
+    const opts = {
+      hostname: 'api.resend.com',
+      path: '/emails',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      }
+    };
+    const req = https_mod.request(opts, (res) => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => { console.log('[EMAIL]', subject, '→', to); resolve(d); });
+    });
+    req.on('error', e => { console.error('[EMAIL] Erreur:', e.message); resolve(null); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// Suspendre/Réactiver le numéro Twilio d'un client
+async function setTwilioNumberStatus(phoneNumber, suspended) {
+  // Rediriger vers un TwiML de suspension ou restaurer le webhook normal
+  const suspendUrl = 'https://voiceimmo-ws-staging.railway.app/twiml-suspended';
+  const activeUrl  = 'https://voiceimmo-ws-staging.railway.app/twiml';
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers.json`;
+  // Chercher le SID du numéro
+  const listUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers.json?PhoneNumber=${encodeURIComponent(phoneNumber)}`;
+  return new Promise((resolve) => {
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const req = https_mod.request(listUrl, { method: 'GET', headers: { 'Authorization': `Basic ${auth}` } }, (res) => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', async () => {
+        try {
+          const data = JSON.parse(d);
+          const num = data.incoming_phone_numbers?.[0];
+          if (!num) { console.warn('[TWILIO] Numéro non trouvé:', phoneNumber); return resolve(false); }
+          // Modifier le webhook voice
+          const updateUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers/${num.sid}.json`;
+          const body = `VoiceUrl=${encodeURIComponent(suspended ? suspendUrl : activeUrl)}`;
+          const r2 = https_mod.request(updateUrl, {
+            method: 'POST',
+            headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+          }, (res2) => { res2.resume(); res2.on('end', () => resolve(true)); });
+          r2.on('error', () => resolve(false));
+          r2.write(body);
+          r2.end();
+        } catch(e) { console.error('[TWILIO] Erreur:', e.message); resolve(false); }
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+// ─── Handlers événements Stripe ───────────────────────────────────────────────
+
+async function handlePaymentSucceeded(invoice) {
+  console.log('[STRIPE] ✅ Paiement réussi — customer:', invoice.customer);
+  const client = await findClientByStripeId(invoice.customer);
+  if (!client) { console.warn('[STRIPE] Client non trouvé pour customer:', invoice.customer); return; }
+
+  // Calculer nouvelle date de fin (+1 mois depuis aujourd'hui ou depuis date_fin actuelle)
+  const base = client.date_fin_abonnement && new Date(client.date_fin_abonnement) > new Date()
+    ? new Date(client.date_fin_abonnement) : new Date();
+  base.setMonth(base.getMonth() + 1);
+  const newEndDate = base.toISOString().slice(0, 10);
+
+  // Mettre à jour en base
+  await base44Request('update', 'Client', { id: client.id, data: {
+    date_fin_abonnement: newEndDate,
+    statut: 'Actif',
+    date_suppression: null,
+    stripe_payment_status: 'ok',
+    stripe_last_payment: new Date().toISOString().slice(0, 10),
+  }});
+
+  // Réactiver Twilio si suspendu
+  if (client.numero_actuel && client.statut !== 'Actif') {
+    await setTwilioNumberStatus(client.numero_actuel, false);
+  }
+
+  // Email confirmation + facture
+  const montant = (invoice.amount_paid / 100).toFixed(2).replace('.', ',');
+  const nomClient = (client.prenom + ' ' + client.nom).trim() || client.nom_entreprise;
+  await sendStripeEmail(
+    client.email,
+    `✅ Renouvellement confirmé — Voxzen ${client.plan}`,
+    `<div style="font-family:sans-serif;max-width:600px;margin:auto">
+      <h2 style="color:#6366f1">✅ Votre abonnement a été renouvelé</h2>
+      <p>Bonjour ${nomClient},</p>
+      <p>Votre abonnement <strong>Voxzen ${client.plan}</strong> a bien été renouvelé.</p>
+      <table style="border-collapse:collapse;width:100%;margin:20px 0">
+        <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Montant prélevé</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold">${montant}€ TTC</td></tr>
+        <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Nouvelle date d'échéance</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold">${new Date(newEndDate).toLocaleDateString('fr-FR')}</td></tr>
+        <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Facture</td><td style="padding:8px;border:1px solid #e5e7eb"><a href="${invoice.hosted_invoice_url || '#'}" style="color:#6366f1">Télécharger la facture</a></td></tr>
+      </table>
+      <p style="color:#6b7280;font-size:13px">Merci de votre confiance.<br>L'équipe Voxzen</p>
+    </div>`
+  );
+  console.log('[STRIPE] ✅ Client mis à jour:', client.nom_entreprise, '→ fin:', newEndDate);
+}
+
+async function handlePaymentFailed(invoice) {
+  console.log('[STRIPE] ❌ Paiement échoué — customer:', invoice.customer);
+  const client = await findClientByStripeId(invoice.customer);
+  if (!client) return;
+
+  // Enregistrer l'échec
+  await base44Request('update', 'Client', { id: client.id, data: {
+    stripe_payment_status: 'failed',
+    stripe_payment_failed_at: new Date().toISOString().slice(0, 10),
+  }});
+
+  const nomClient = (client.prenom + ' ' + client.nom).trim() || client.nom_entreprise;
+  await sendStripeEmail(
+    client.email,
+    `⚠️ Échec de paiement — Voxzen ${client.plan}`,
+    `<div style="font-family:sans-serif;max-width:600px;margin:auto">
+      <h2 style="color:#f59e0b">⚠️ Problème de paiement</h2>
+      <p>Bonjour ${nomClient},</p>
+      <p>Le prélèvement automatique pour votre abonnement <strong>Voxzen ${client.plan}</strong> n'a pas pu être effectué.</p>
+      <p><strong>Si le paiement n'est pas régularisé dans les 48h, votre service sera suspendu.</strong></p>
+      <p>Pour mettre à jour votre moyen de paiement, contactez-nous à <a href="mailto:contact@voxzen.io">contact@voxzen.io</a>.</p>
+      <p style="color:#6b7280;font-size:13px">L'équipe Voxzen</p>
+    </div>`
+  );
+  console.log('[STRIPE] ⚠️ Email échec paiement envoyé à:', client.email);
+}
+
+async function handleSubscriptionDeleted(subscription) {
+  console.log('[STRIPE] 🚫 Subscription supprimée — customer:', subscription.customer);
+  const client = await findClientByStripeId(subscription.customer);
+  if (!client) return;
+
+  await base44Request('update', 'Client', { id: client.id, data: {
+    statut: 'Résilié',
+    date_fin_abonnement: new Date().toISOString().slice(0, 10),
+    date_suppression: new Date().toISOString().slice(0, 10),
+  }});
+
+  if (client.numero_actuel) {
+    await setTwilioNumberStatus(client.numero_actuel, true);
+    console.log('[TWILIO] Numéro suspendu:', client.numero_actuel);
+  }
+}
+
+// ─── TwiML de suspension (abonnement résilié) ─────────────────────────────────
+app.post('/twiml-suspended', (req, res) => {
+  res.set('Content-Type', 'text/xml');
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="fr-FR" voice="alice">Nous sommes désolés, ce service est actuellement suspendu. Veuillez contacter votre prestataire Voxzen pour régulariser votre abonnement.</Say>
+  <Hangup/>
+</Response>`);
+});
 
 const PORT = process.env.PORT || 8080;
-
-// ─── Route reload-config (appelée par l'app après sauvegarde) ────────────────
-app.post('/reload-config', express.json(), async (req, res) => {
-  console.log('[CFG] 🔄 Rechargement forcé depuis l\'app client...');
-  try {
-    await refreshConfigs();
-    res.json({ ok: true, message: 'Config rechargée', configs: Object.keys(CONFIGS) });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ─── Route OTP Admin ────────────────────────────────────────────────────────
-app.post('/send-otp', express.json(), (req, res) => {
-  const body = req.body || {};
-  const ADMIN_EMAILS = ['admin@voxzen.io', 'christophe.despretz@gmail.com'];
-  const requestedTo = (body.to || '').toLowerCase().trim();
-  const to = ADMIN_EMAILS.includes(requestedTo) ? requestedTo : 'admin@voxzen.io';
-  const code = body.code;
-  const expiry = body.expiry || '10 min';
-  if (!code) return res.status(400).json({ error: 'Paramètres manquants' });
-  console.log('[OTP] Requête reçue → ' + to + ' code=' + code);
-  // Répondre immédiatement pour éviter le timeout Railway
-  res.json({ ok: true, queued: true });
-  // Envoyer l'email en arrière-plan
-  sendOtpEmail(to, code, expiry)
-    .then(() => console.log('[OTP] ✅ Email OTP envoyé à ' + to))
-    .catch(e => console.error('[OTP] Echec envoi email: ' + e.message));
-});
-
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v52-live sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v25-clean sur port ${PORT}`));
