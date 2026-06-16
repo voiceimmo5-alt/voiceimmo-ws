@@ -39,6 +39,21 @@ app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (re
 });
 
 
+
+// ─── Route auto-login token (appelée par merci.html) ─────────────────────────
+app.get('/get-autologin-token', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { token, session_id } = req.query;
+  let resolvedToken = token;
+  if (!resolvedToken && session_id) resolvedToken = AUTOLOGIN_BY_SESSION.get(session_id);
+  if (!resolvedToken) return res.json({ ok: false, error: 'token manquant' });
+  const data = AUTOLOGIN_TOKENS.get(resolvedToken);
+  if (!data || data.expires < Date.now()) {
+    return res.json({ ok: false, error: 'token invalide ou expiré' });
+  }
+  res.json({ ok: true, email: data.email, nom_agence: data.nom_agence, token: resolvedToken });
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -107,6 +122,18 @@ const CONFIGS_FALLBACK = {
 
 // Cache dynamique — mis à jour depuis Base44 toutes les 5 minutes
 let CONFIGS = { ...CONFIGS_FALLBACK };
+
+// ─── Auto-login token store (onboarding Stripe) ──────────────────────────────
+const AUTOLOGIN_TOKENS = new Map(); // token -> { email, nom_agence, expires }
+const AUTOLOGIN_BY_SESSION = new Map(); // session_id -> token
+function storeAutologinToken(token, email, nom_agence, sessionId) {
+  const data = { email, nom_agence, expires: Date.now() + 15 * 60 * 1000 }; // 15 min
+  AUTOLOGIN_TOKENS.set(token, data);
+  if (sessionId) AUTOLOGIN_BY_SESSION.set(sessionId, token);
+  // Nettoyage auto
+  setTimeout(() => { AUTOLOGIN_TOKENS.delete(token); AUTOLOGIN_BY_SESSION.delete(sessionId); }, 15 * 60 * 1000);
+}
+
 
 function mapClientToConfig(c) {
   // Convertit un enregistrement Client Base44 en config voicebot
@@ -390,6 +417,8 @@ async function handleNewClientOnboarding(obj, customerId, subscriptionId, plan) 
     // Envoyer email de bienvenue avec lien set-password
     if (email && RESEND_API_KEY) {
       const token = Buffer.from(email + ':' + Date.now()).toString('base64url');
+      const sessionId = obj.metadata?.checkout_session_id || obj.subscription || '';
+      storeAutologinToken(token, email, nom_agence, sessionId);
       const setPasswordLink = 'https://app.voxzen.io/set-password?token=' + token + '&email=' + encodeURIComponent(email);
       await sendWelcomeEmail(email, nom_agence, login, setPasswordLink);
       console.log('[STRIPE] 📧 Email bienvenue envoyé à:', email);
