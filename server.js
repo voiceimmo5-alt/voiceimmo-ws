@@ -621,50 +621,212 @@ async function setTwilioNumberStatus(phoneNumber, suspended) {
 
 // ─── Handlers événements Stripe ───────────────────────────────────────────────
 
+// Récupérer les custom fields de la checkout session liée à une subscription
+async function getCheckoutDataFromSubscription(subscriptionId) {
+  try {
+    const sessions = await stripeRequest('GET', `/v1/checkout/sessions?subscription=${subscriptionId}&limit=1`);
+    const session = sessions?.data?.[0];
+    if (!session) return {};
+    const fields = {};
+    (session.custom_fields || []).forEach(f => {
+      fields[f.key] = f.text?.value || '';
+    });
+    return {
+      nom_agence: fields.nom_agence || session.customer_details?.name || '',
+      telephone: fields.telephone || session.customer_details?.phone || '',
+      email: session.customer_details?.email || session.customer_email || '',
+      plan: session.metadata?.plan || (session.subscription_data?.metadata?.plan) || 'starter',
+    };
+  } catch(e) {
+    console.error('[STRIPE] getCheckoutData error:', e.message);
+    return {};
+  }
+}
+
+// Appel direct à l'API Stripe (sans SDK)
+async function stripeRequest(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = body ? new URLSearchParams(body).toString() : '';
+    const opts = {
+      hostname: 'api.stripe.com',
+      path,
+      method,
+      headers: {
+        'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      }
+    };
+    if (bodyStr) opts.headers['Content-Length'] = Buffer.byteLength(bodyStr);
+    const req = https_mod.request(opts, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch(e) { reject(e); }});
+    });
+    req.on('error', reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+// Générer un token aléatoire pour le lien de définition de mot de passe
+function generateToken(len = 48) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let token = '';
+  for (let i = 0; i < len; i++) token += chars[Math.floor(Math.random() * chars.length)];
+  return token;
+}
+
 async function handlePaymentSucceeded(invoice) {
   console.log('[STRIPE] ✅ Paiement réussi — customer:', invoice.customer);
-  const client = await findClientByStripeId(invoice.customer);
-  if (!client) { console.warn('[STRIPE] Client non trouvé pour customer:', invoice.customer); return; }
 
-  // Calculer nouvelle date de fin (+1 mois depuis aujourd'hui ou depuis date_fin actuelle)
-  const base = client.date_fin_abonnement && new Date(client.date_fin_abonnement) > new Date()
-    ? new Date(client.date_fin_abonnement) : new Date();
-  base.setMonth(base.getMonth() + 1);
-  const newEndDate = base.toISOString().slice(0, 10);
+  // Vérifier si le client existe déjà (renouvellement)
+  let client = await findClientByStripeId(invoice.customer);
 
-  // Mettre à jour en base
-  await base44Request('update', 'Client', { id: client.id, data: {
-    date_fin_abonnement: newEndDate,
-    statut: 'Actif',
-    date_suppression: null,
-    stripe_payment_status: 'ok',
-    stripe_last_payment: new Date().toISOString().slice(0, 10),
-  }});
+  if (client) {
+    // ── RENOUVELLEMENT ─────────────────────────────────────────────────────
+    const base = client.date_fin_abonnement && new Date(client.date_fin_abonnement) > new Date()
+      ? new Date(client.date_fin_abonnement) : new Date();
+    base.setMonth(base.getMonth() + 1);
+    const newEndDate = base.toISOString().slice(0, 10);
 
-  // Réactiver Twilio si suspendu
-  if (client.numero_actuel && client.statut !== 'Actif') {
-    await setTwilioNumberStatus(client.numero_actuel, false);
+    await base44Request('update', 'Client', { id: client.id, data: {
+      date_fin_abonnement: newEndDate,
+      statut: 'Actif',
+      date_suppression: null,
+      stripe_payment_status: 'ok',
+      stripe_last_payment: new Date().toISOString().slice(0, 10),
+    }});
+
+    if (client.numero_actuel && client.statut !== 'Actif') {
+      await setTwilioNumberStatus(client.numero_actuel, false);
+    }
+
+    const montant = (invoice.amount_paid / 100).toFixed(2).replace('.', ',');
+    const nomClient = (client.prenom + ' ' + client.nom).trim() || client.nom_entreprise;
+    await sendStripeEmail(
+      client.email,
+      `✅ Renouvellement confirmé — Voxzen ${client.plan}`,
+      `<div style="font-family:sans-serif;max-width:600px;margin:auto">
+        <h2 style="color:#6366f1">✅ Votre abonnement a été renouvelé</h2>
+        <p>Bonjour ${nomClient},</p>
+        <p>Votre abonnement <strong>Voxzen ${client.plan}</strong> a bien été renouvelé.</p>
+        <table style="border-collapse:collapse;width:100%;margin:20px 0">
+          <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Montant prélevé</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold">${montant}€ TTC</td></tr>
+          <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Nouvelle date d'échéance</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold">${new Date(newEndDate).toLocaleDateString('fr-FR')}</td></tr>
+          <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Facture</td><td style="padding:8px;border:1px solid #e5e7eb"><a href="${invoice.hosted_invoice_url || '#'}" style="color:#6366f1">Télécharger la facture</a></td></tr>
+        </table>
+        <p style="color:#6b7280;font-size:13px">Merci de votre confiance.<br>L'équipe Voxzen</p>
+      </div>`
+    );
+    console.log('[STRIPE] ✅ Renouvellement client:', client.nom_entreprise, '→ fin:', newEndDate);
+
+  } else {
+    // ── NOUVEAU CLIENT — ONBOARDING AUTOMATIQUE ────────────────────────────
+    console.log('[STRIPE] 🆕 Nouveau client — démarrage onboarding...');
+
+    // Récupérer les données de la checkout session
+    const subId = invoice.subscription;
+    const checkoutData = await getCheckoutDataFromSubscription(subId);
+    const email = checkoutData.email || invoice.customer_email || '';
+    const nomAgence = checkoutData.nom_agence || 'Nouvelle agence';
+    const telephone = checkoutData.telephone || '';
+    const plan = checkoutData.plan || 'starter';
+
+    if (!email) {
+      console.warn('[STRIPE] ⚠️ Pas d\'email pour onboarding — customer:', invoice.customer);
+      return;
+    }
+
+    // Générer login et token mot de passe
+    const login = email.toLowerCase().trim();
+    const passwordToken = generateToken(48);
+    const tokenExpires = new Date(Date.now() + 72 * 3600 * 1000).toISOString(); // 72h
+
+    // Calculer dates abonnement
+    const today = new Date();
+    const trialEnd = new Date(today);
+    trialEnd.setDate(trialEnd.getDate() + 14);
+
+    // Appels par plan
+    const appelsParPlan = { starter: 200, pro: 500, premium: 2000 };
+    const appels = appelsParPlan[plan] || 200;
+
+    // Créer le client dans Base44
+    const newClient = await base44Request('create', 'Client', {
+      data: {
+        nom_entreprise: nomAgence,
+        prenom: '',
+        nom: nomAgence,
+        email: login,
+        telephone: telephone,
+        plan: plan.charAt(0).toUpperCase() + plan.slice(1),
+        statut: 'Trial',
+        login: login,
+        password_hash: `token:${passwordToken}:${tokenExpires}`,
+        stripe_customer_id: invoice.customer,
+        stripe_subscription_id: subId,
+        stripe_payment_status: 'trial',
+        stripe_last_payment: today.toISOString().slice(0, 10),
+        date_souscription: today.toISOString().slice(0, 10),
+        date_fin_abonnement: trialEnd.toISOString().slice(0, 10),
+        date_prochain_reset: trialEnd.toISOString().slice(0, 10),
+        appels_total: 0,
+        appels_mois: 0,
+        appels_pack: appels,
+        appels_seuil_alerte: Math.floor(appels * 0.8),
+        message_accueil: `Bonjour, vous êtes bien chez ${nomAgence}. Notre assistante Sophie prend en charge votre appel.`,
+        instructions_ia: `Tu es Sophie, assistante vocale de l'agence ${nomAgence}. Tu réponds aux appels entrants, collectes les informations des prospects (nom, téléphone, besoin, ville, prix, référence du bien) et rassures les appelants.`,
+        voix: 'shimmer',
+        destinataires_email: [login, 'voiceimmo5@gmail.com'],
+        notes: `Compte créé automatiquement via Stripe le ${today.toLocaleDateString('fr-FR')}`,
+      }
+    });
+
+    console.log('[STRIPE] ✅ Client créé:', nomAgence, '— login:', login);
+
+    // Email de bienvenue avec lien de définition de mot de passe
+    const setPasswordUrl = `https://app.voxzen.io/set-password?token=${passwordToken}&email=${encodeURIComponent(login)}`;
+    await sendStripeEmail(
+      [login, 'voiceimmo5@gmail.com'],
+      `🎉 Bienvenue chez Voxzen — Votre compte est prêt !`,
+      `<div style="font-family:sans-serif;max-width:600px;margin:auto;padding:24px">
+        <div style="text-align:center;margin-bottom:32px">
+          <img src="https://voxzen.io/logo.png" alt="Voxzen" style="height:40px" onerror="this.style.display='none'">
+          <h1 style="color:#6366f1;font-size:28px;margin-top:16px">Bienvenue chez Voxzen 🎉</h1>
+        </div>
+        <p style="font-size:16px">Bonjour,</p>
+        <p style="font-size:16px">Votre compte <strong>${nomAgence}</strong> est prêt. Sophie, votre assistante vocale IA, est déjà configurée pour votre agence.</p>
+        
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:20px;margin:24px 0">
+          <h3 style="color:#0369a1;margin:0 0 12px">📋 Vos identifiants</h3>
+          <p style="margin:4px 0"><strong>Login :</strong> ${login}</p>
+          <p style="margin:4px 0"><strong>Tableau de bord :</strong> <a href="https://app.voxzen.io" style="color:#6366f1">app.voxzen.io</a></p>
+        </div>
+
+        <div style="text-align:center;margin:32px 0">
+          <a href="${setPasswordUrl}" style="background:#6366f1;color:white;padding:16px 32px;border-radius:8px;text-decoration:none;font-size:18px;font-weight:bold;display:inline-block">
+            🔑 Définir mon mot de passe
+          </a>
+          <p style="color:#9ca3af;font-size:12px;margin-top:8px">Ce lien est valable 72 heures</p>
+        </div>
+
+        <div style="background:#f9fafb;border-radius:12px;padding:20px;margin:24px 0">
+          <h3 style="color:#374151;margin:0 0 12px">🚀 Votre essai gratuit</h3>
+          <p style="margin:4px 0;color:#6b7280">✅ 14 jours d'essai gratuit</p>
+          <p style="margin:4px 0;color:#6b7280">✅ ${appels} appels/mois inclus (plan ${plan.charAt(0).toUpperCase() + plan.slice(1)})</p>
+          <p style="margin:4px 0;color:#6b7280">✅ Sophie déjà configurée pour votre agence</p>
+          <p style="margin:4px 0;color:#6b7280">✅ Tableau de bord leads en temps réel</p>
+        </div>
+
+        <p style="color:#6b7280;font-size:13px;text-align:center;margin-top:32px">
+          Une question ? Répondez à cet email ou contactez-nous sur <a href="mailto:contact@voxzen.io" style="color:#6366f1">contact@voxzen.io</a><br>
+          L'équipe Voxzen
+        </p>
+      </div>`
+    );
+
+    console.log('[STRIPE] 📧 Email de bienvenue envoyé à:', login);
   }
-
-  // Email confirmation + facture
-  const montant = (invoice.amount_paid / 100).toFixed(2).replace('.', ',');
-  const nomClient = (client.prenom + ' ' + client.nom).trim() || client.nom_entreprise;
-  await sendStripeEmail(
-    client.email,
-    `✅ Renouvellement confirmé — Voxzen ${client.plan}`,
-    `<div style="font-family:sans-serif;max-width:600px;margin:auto">
-      <h2 style="color:#6366f1">✅ Votre abonnement a été renouvelé</h2>
-      <p>Bonjour ${nomClient},</p>
-      <p>Votre abonnement <strong>Voxzen ${client.plan}</strong> a bien été renouvelé.</p>
-      <table style="border-collapse:collapse;width:100%;margin:20px 0">
-        <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Montant prélevé</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold">${montant}€ TTC</td></tr>
-        <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Nouvelle date d'échéance</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold">${new Date(newEndDate).toLocaleDateString('fr-FR')}</td></tr>
-        <tr><td style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">Facture</td><td style="padding:8px;border:1px solid #e5e7eb"><a href="${invoice.hosted_invoice_url || '#'}" style="color:#6366f1">Télécharger la facture</a></td></tr>
-      </table>
-      <p style="color:#6b7280;font-size:13px">Merci de votre confiance.<br>L'équipe Voxzen</p>
-    </div>`
-  );
-  console.log('[STRIPE] ✅ Client mis à jour:', client.nom_entreprise, '→ fin:', newEndDate);
 }
 
 async function handlePaymentFailed(invoice) {
