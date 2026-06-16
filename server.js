@@ -7,6 +7,38 @@ const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 
+// Route Stripe raw body — DOIT être avant express.json()
+// ─── Stripe — Webhook ────────────────────────────────────────────────────────
+// IMPORTANT : raw body AVANT express.json() — à placer avant app.use(express.json())
+// mais on utilise express.raw() directement sur la route
+
+app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+  try {
+    event = verifyStripeSignature(req.body, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('[STRIPE] ❌ Signature invalide:', err.message);
+    return res.status(400).send('Webhook Error: ' + err.message);
+  }
+  res.json({ received: true });
+  console.log('[STRIPE] Event reçu:', event.type);
+  try {
+    if (event.type === 'invoice.payment_succeeded') {
+      await handlePaymentSucceeded(event.data.object);
+    } else if (event.type === 'invoice.payment_failed') {
+      await handlePaymentFailed(event.data.object);
+    } else if (event.type === 'customer.subscription.deleted') {
+      await handleSubscriptionDeleted(event.data.object);
+    } else if (event.type === 'checkout.session.completed') {
+      await handleCheckoutCompleted(event.data.object);
+    }
+  } catch (err) {
+    console.error('[STRIPE] ❌ Erreur traitement event:', err.message);
+  }
+});
+
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -246,36 +278,6 @@ async function sendWelcomeEmail(email, nom_agence, login, setPasswordLink) {
   await sendResend(email, 'Bienvenue sur Voxzen — Activez votre compte', html);
   return true;
 }
-
-// ─── Stripe — Webhook ────────────────────────────────────────────────────────
-// IMPORTANT : raw body AVANT express.json() — à placer avant app.use(express.json())
-// mais on utilise express.raw() directement sur la route
-
-app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-  try {
-    event = verifyStripeSignature(req.body, sig, STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error('[STRIPE] ❌ Signature invalide:', err.message);
-    return res.status(400).send('Webhook Error: ' + err.message);
-  }
-  res.json({ received: true });
-  console.log('[STRIPE] Event reçu:', event.type);
-  try {
-    if (event.type === 'invoice.payment_succeeded') {
-      await handlePaymentSucceeded(event.data.object);
-    } else if (event.type === 'invoice.payment_failed') {
-      await handlePaymentFailed(event.data.object);
-    } else if (event.type === 'customer.subscription.deleted') {
-      await handleSubscriptionDeleted(event.data.object);
-    } else if (event.type === 'checkout.session.completed') {
-      await handleCheckoutCompleted(event.data.object);
-    }
-  } catch (err) {
-    console.error('[STRIPE] ❌ Erreur traitement event:', err.message);
-  }
-});
 
 // ─── Stripe — Handlers ───────────────────────────────────────────────────────
 
