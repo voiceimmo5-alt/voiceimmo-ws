@@ -349,12 +349,9 @@ async function handleSubscriptionDeleted(subscription) {
 
 async function handleCheckoutCompleted(session) {
   const customerId = session.customer;
-  const subscriptionId = session.subscription;
-  console.log('[STRIPE] 💳 Checkout complété — customer:', customerId);
-  const existing = await findClientByStripeId(customerId);
-  if (!existing) {
-    await handleNewClientOnboarding(session, customerId, subscriptionId, null);
-  }
+  console.log('[STRIPE] 💳 Checkout complété — customer:', customerId, '→ onboarding géré par invoice.payment_succeeded');
+  // Ne pas créer le client ici — invoice.payment_succeeded arrive dans la foulée et s'en charge
+  // Cela évite la double création
 }
 
 async function handleNewClientOnboarding(obj, customerId, subscriptionId, plan) {
