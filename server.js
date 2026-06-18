@@ -154,14 +154,15 @@ function mapClientToConfig(c) {
     }
   }
   return {
-    nom_agence:          c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
-    client_db_id:        c.id || fallback.client_db_id,
-    voix:                c.voix || fallback.voix || 'coral',
-    site_internet:       c.site_internet || fallback.site_internet || '',
-    message_accueil:     c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
-    instructions_ia:     c.instructions_ia || null,
+    nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
+    client_db_id:         c.id || fallback.client_db_id,
+    voix:                 c.voix || fallback.voix || 'coral',
+    site_internet:        c.site_internet || fallback.site_internet || '',
+    message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
+    instructions_ia:      c.instructions_ia || null,
     agents_arr,
-    destinataires_email: dest,
+    destinataires_email:  dest,
+    enregistrement_actif: c.enregistrement_actif === true,
   };
 }
 
@@ -556,34 +557,70 @@ app.post('/twiml', (req, res) => {
   const sid    = req.body.CallSid|| '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
   const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
+
+  // Enregistrement conditionnel selon config client
+  const toKey = to.startsWith('+') ? to : '+' + to;
+  const cfgTwiml = CONFIGS[toKey] || DEF_CFG();
+  const recordTag = cfgTwiml.enregistrement_actif
+    ? `  <Record action="${baseUrl}/recording-noop" recordingStatusCallback="${baseUrl}/recording-callback" recordingStatusCallbackMethod="POST" trim="trim-silence" />`
+    : '';
+  console.log(\`[TWIML] enregistrement_actif:\${cfgTwiml.enregistrement_actif||false} pour \${toKey}\`);
+
   res.set('Content-Type', 'text/xml');
-  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+  res.send(\`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Record action="${baseUrl}/recording-noop" recordingStatusCallback="${baseUrl}/recording-callback" recordingStatusCallbackMethod="POST" trim="trim-silence" />
+\${recordTag}
   <Connect>
     <Stream url="wss://ws-staging.voiceimmo.fr">
-      <Parameter name="caller" value="${caller}" />
-      <Parameter name="to" value="${to}" />
-      <Parameter name="sid" value="${sid}" />
+      <Parameter name="caller" value="\${caller}" />
+      <Parameter name="to" value="\${to}" />
+      <Parameter name="sid" value="\${sid}" />
     </Stream>
   </Connect>
-</Response>`);
+</Response>\`);
 });
+
+// ─── Mention légale enregistrement ───────────────────────────────────────────
+function getRecordingMention(voix) {
+  // Adapté selon la voix (toutes féminines en français par défaut)
+  const voixMasc = ['alloy', 'echo', 'onyx', 'fable'];
+  const estMasc  = voixMasc.includes((voix||'coral').toLowerCase());
+  if (estMasc) {
+    return "Pour améliorer la qualité de notre service, cet appel peut être enregistré. ";
+  }
+  return "Pour améliorer la qualité de notre service, cet appel peut être enregistré. ";
+}
+
+function injectRecordingMention(messageAccueil, voix) {
+  const mention = getRecordingMention(voix);
+  // Insérer la mention après la première phrase (après le premier point ou virgule)
+  const match = messageAccueil.match(/^([^.!?]+[.!?]\s*)/);
+  if (match) {
+    return match[0] + mention + messageAccueil.slice(match[0].length);
+  }
+  return messageAccueil + ' ' + mention;
+}
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
 function buildPrompt(c, callerNum) {
   // Priorité 1 : instructions_ia personnalisées depuis la base de données
   if (c.instructions_ia && c.instructions_ia.trim()) {
-    const prompt = c.instructions_ia
+    let prompt = c.instructions_ia
       .replace(/\{\{CALLER\}\}/g, callerNum)
       .replace(/\{\{NUM\}\}/g, callerNum);
-    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum);
+    // Injecter mention légale si enregistrement activé
+    if (c.enregistrement_actif) {
+      const mention = getRecordingMention(c.voix);
+      prompt = mention + prompt;
+    }
+    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
   // Priorité 2 : prompt générique fallback
   console.log('[PROMPT] ⚠️ Fallback prompt générique pour', c.nom_agence);
   const agentsStr = (c.agents_arr || []).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
-  return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+  return `${recordMention}Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
