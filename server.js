@@ -564,10 +564,10 @@ app.post('/twiml', (req, res) => {
   const recordTag = cfgTwiml.enregistrement_actif
     ? `  <Record action="${baseUrl}/recording-noop" recordingStatusCallback="${baseUrl}/recording-callback" recordingStatusCallbackMethod="POST" trim="trim-silence" />`
     : '';
-  console.log(\`[TWIML] enregistrement_actif:\${cfgTwiml.enregistrement_actif||false} pour \${toKey}\`);
+  console.log(`[TWIML] enregistrement_actif:\${cfgTwiml.enregistrement_actif||false} pour \${toKey}`);
 
   res.set('Content-Type', 'text/xml');
-  res.send(\`<?xml version="1.0" encoding="UTF-8"?>
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
 \${recordTag}
   <Connect>
@@ -577,7 +577,7 @@ app.post('/twiml', (req, res) => {
       <Parameter name="sid" value="\${sid}" />
     </Stream>
   </Connect>
-</Response>\`);
+</Response>`);
 });
 
 // ─── Mention légale enregistrement ───────────────────────────────────────────
