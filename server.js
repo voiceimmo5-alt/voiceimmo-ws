@@ -795,6 +795,16 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
+
+      // Source alternative : response.output_item.done (item.formatted.transcript)
+      if (m.type === 'response.output_item.done' && m.item?.formatted?.transcript) {
+        const t = m.item.formatted.transcript.trim();
+        if (t && !transcript.some(e => e.r === 'a' && e.t === t)) {
+          transcript.push({ r: 'a', t });
+          console.log(`[IA-ITEM] "${t.slice(0, 100)}"`);
+        }
+      }
+
       if (m.type === 'response.audio_transcript.done' && curAss) {
         transcript.push({ r: 'a', t: curAss });
         console.log(`[IA] "${curAss.slice(0, 100)}"`);
@@ -847,20 +857,29 @@ wss.on('connection', (ws, req) => {
   }
 
   function parseLeadInfo(text) {
-    if (!lead.nom && /je m.appelle|c.est |mon nom est/i.test(text)) {
-      const m = text.match(/(?:je m.appelle|c.est|mon nom est)\s+([A-ZÀ-Ý][a-zà-ý]+(?:\s+[A-ZÀ-Ý][a-zà-ý]+)*)/i);
-      if (m) lead.nom = m[1];
+    // Nom : "je m'appelle X", "c'est X Y" (prénom + nom obligatoire), "mon nom est X"
+    if (!lead.nom) {
+      const mApp = text.match(/je m.appelle\s+([A-ZÀ-Ýa-zà-ý]+(?:\s+[A-ZÀ-Ýa-zà-ý]+)+)/i);
+      const mNom = text.match(/mon nom est\s+([A-ZÀ-Ýa-zà-ý]+(?:\s+[A-ZÀ-Ýa-zà-ý]+)+)/i);
+      // "c'est X Y" : exige au moins prénom + nom (2 mots min, premiers en majuscule)
+      const mCest = text.match(/c.est\s+([A-ZÀ-Ý][a-zà-ý]+\s+[A-ZÀ-Ý][a-zà-ý]+)/);
+      if (mApp) lead.nom = mApp[1];
+      else if (mNom) lead.nom = mNom[1];
+      else if (mCest) lead.nom = mCest[1];
     }
     if (!lead.besoin && /acheter|achat|vendre|vente|louer|location|estim/i.test(text)) {
       const m = text.match(/(acheter|achat|vendre|vente|louer|location|estimation)/i);
       if (m) lead.besoin = m[1];
     }
     if (!lead.ville) {
-      const m = text.match(/(?:à|sur|secteur|ville de|commune de)\s+([A-ZÀ-Ý][a-zà-ý\-]+(?:\s+[A-ZÀ-Ý][a-zà-ý\-]+)*)/i);
-      if (m) lead.ville = m[1];
+      // Ville : "à Lyon", "sur Paris", "secteur Bordeaux" — exige une vraie ville (maj + min, min 3 chars)
+      // Exclus les faux positifs : "plus", "bientôt", "accord", etc.
+      const exclus = /^(plus|bientôt|accord|revoir|tout|cela|ça|voix|départ|arrivée|suite|nouveau)$/i;
+      const m = text.match(/(?:à|sur|secteur|ville de|commune de|habite à|situé à|recherche à)\s+([A-ZÀ-Ý][a-zà-ý\-]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ý\-]+)*)/i);
+      if (m && !exclus.test(m[1].trim())) lead.ville = m[1];
     }
     if (!lead.prix) {
-      const m = text.match(/(\d[\d\s]*(?:euros?|€|k€|000))/i);
+      const m = text.match(/(\d[\d\s\.]*(?:euros?|€|k€|000\b))/i);
       if (m) lead.prix = m[1];
     }
   }
