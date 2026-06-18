@@ -729,9 +729,33 @@ wss.on('connection', (ws, req) => {
   let accueilDone = false;
   let callTimer  = null;
 
+  let hangingUp = false; // garde-fou anti-double-raccrochage
+
+  async function hangupTwilio(sid) {
+    if (!sid) return;
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) return;
+    try {
+      const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+      const r = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${sid}.json`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'Status=completed'
+        }
+      );
+      const status = r.status;
+      console.log(`[HANGUP] REST Twilio → HTTP ${status}`);
+    } catch(e) {
+      console.warn('[HANGUP] REST error:', e.message);
+    }
+  }
+
   function hangup() {
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
     if (oai && oai.readyState === WebSocket.OPEN) oai.close();
+    // Fermer aussi le WebSocket Twilio Media Stream pour libérer la connexion
+    try { if (ws.readyState === ws.OPEN) ws.close(); } catch(_) {}
   }
 
 
@@ -899,25 +923,17 @@ wss.on('connection', (ws, req) => {
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
         const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
-        if (finPhrases.test(t)) {
-          console.log('[FIN] Phrase de fin détectée → raccrochage dans 5s');
+        if (finPhrases.test(t) && !hangingUp) {
+          hangingUp = true;
+          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
           setTimeout(async () => {
-            console.log('[FIN] → fermeture WebSocket');
-            try { ws.close(); } catch(_) {}
-            try { if (oai) oai.close(); } catch(_) {}
-            if (callSid) {
-              try {
-                const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-                await fetch(`https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: 'Status=completed'
-                });
-                console.log('[FIN] REST Twilio envoyé');
-              } catch(e) { console.warn('[FIN] REST error:', e.message); }
-            }
+            // 1. API REST Twilio EN PREMIER → raccroche le téléphone physiquement
+            await hangupTwilio(callSid);
+            // 2. Fermer les connexions WebSocket
+            hangup();
+            // 3. Sauvegarder le lead + envoyer email
             await flush();
-          }, 5000);
+          }, 2000);
         }
       }
 
@@ -999,7 +1015,13 @@ wss.on('connection', (ws, req) => {
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
       cfg = getConfig(to || '');
       connectOAI(lead.tel);
-      callTimer = setTimeout(() => { console.log('[TIMER] 2min → raccrocher'); hangup(); }, 120000);
+      callTimer = setTimeout(async () => {
+        console.log('[TIMER] 2min → raccrochage automatique');
+        hangingUp = true;
+        await hangupTwilio(callSid);
+        hangup();
+        await flush();
+      }, 120000);
 
       // Déclencher l'enregistrement via API REST Twilio (pas via TwiML pour ne pas couper le stream)
       if (doRecord && callSid && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
