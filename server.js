@@ -555,11 +555,13 @@ app.post('/twiml', (req, res) => {
   const to     = req.body.To     || req.body.Called || '';
   const sid    = req.body.CallSid|| '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
+  const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Record action="${baseUrl}/recording-noop" recordingStatusCallback="${baseUrl}/recording-callback" recordingStatusCallbackMethod="POST" trim="trim-silence" />
   <Connect>
-    <Stream url="wss://ws.voiceimmo.fr">
+    <Stream url="wss://ws-staging.voiceimmo.fr">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
@@ -642,6 +644,7 @@ wss.on('connection', (ws, req) => {
         statut:           'Nouveau',
         email_envoye:     true,
         client_id:        cfgData?.client_db_id || null,
+        call_sid:         leadData.callSid || '',
         notes:            leadData.transcript && leadData.transcript.length
           ? 'Discussion:\n' + leadData.transcript.map(e =>
               (e.r === 'a' ? 'Sophie: ' : 'Client: ') + e.t
@@ -691,7 +694,7 @@ wss.on('connection', (ws, req) => {
     const activeCfg = cfg || DEF_CFG();
     await Promise.all([
       sendEmail(lead, activeCfg, transcript),
-      saveLead({ ...lead, transcript }, activeCfg),
+      saveLead({ ...lead, transcript, callSid }, activeCfg),
       incrementAppels(activeCfg),
     ]);
   }
@@ -867,6 +870,40 @@ process.on('unhandledRejection', (reason, promise) => {
 const PORT = process.env.PORT || 8080;
 
 // ─── Route reload-config (appelée par l'app après sauvegarde) ────────────────
+// ─── Webhook Twilio — enregistrement disponible ─────────────────────────────
+app.post('/recording-noop', (req, res) => {
+  // Twilio appelle cette URL quand l'action <Record> se termine (avant Connect)
+  // On ne fait rien — la conversation se poursuit via Connect/Stream
+  res.set('Content-Type', 'text/xml');
+  res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+});
+
+app.post('/recording-callback', express.urlencoded({ extended: true }), async (req, res) => {
+  res.sendStatus(200);
+  const { CallSid, RecordingSid, RecordingUrl, RecordingStatus } = req.body;
+  console.log(`[REC] Callback — CallSid:${CallSid} RecordingSid:${RecordingSid} Status:${RecordingStatus}`);
+  if (RecordingStatus !== 'completed' || !RecordingUrl || !CallSid) return;
+
+  // URL MP3 Twilio (ajouter .mp3 pour accès direct)
+  const mp3Url = RecordingUrl + '.mp3';
+  console.log(`[REC] ✅ Enregistrement prêt: ${mp3Url}`);
+
+  // Mettre à jour le Lead correspondant dans Base44
+  try {
+    const res2 = await fetch(`${BASE44_APP_URL}/updateLeadRecording`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ call_sid: CallSid, recording_url: mp3Url, recording_sid: RecordingSid }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const data = await res2.json();
+    if (data.ok) console.log('[REC] ✅ Lead mis à jour avec recording_url');
+    else console.warn('[REC] ⚠️ updateLeadRecording:', JSON.stringify(data));
+  } catch(e) {
+    console.warn('[REC] ⚠️ Exception updateLeadRecording:', e.message);
+  }
+});
+
 app.post('/reload-config', express.json(), async (req, res) => {
   console.log('[CFG] 🔄 Rechargement forcé depuis l\'app client...');
   try {
