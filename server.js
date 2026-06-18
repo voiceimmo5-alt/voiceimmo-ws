@@ -251,7 +251,7 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
       + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
       + '<table style="width:100%;border-collapse:collapse">'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Nom</td><td style="padding:8px">' + (lead.nom||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px">' + (lead.telephone||'N/A') + '</td></tr>'
+      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:' + (lead.telephone||'').replace(/\s/g,'') + '" style="color:#4f46e5;font-weight:700;text-decoration:none;font-size:16px">' + (lead.telephone||'N/A') + '</a></td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Besoin</td><td style="padding:8px">' + (lead.besoin||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;font-weight:bold">Ville</td><td style="padding:8px">' + (lead.ville||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Prix</td><td style="padding:8px">' + (lead.prix||'N/A') + '</td></tr>'
