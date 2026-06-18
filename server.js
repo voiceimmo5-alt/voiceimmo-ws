@@ -558,23 +558,22 @@ app.post('/twiml', (req, res) => {
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
   const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
 
-  // Enregistrement conditionnel selon config client
+  // Enregistrement : on passe l'info via paramètre au WebSocket
+  // L'enregistrement sera déclenché via API REST Twilio après établissement du stream
   const toKey = to.startsWith('+') ? to : '+' + to;
   const cfgTwiml = CONFIGS[toKey] || DEF_CFG();
-  const recordTag = cfgTwiml.enregistrement_actif
-    ? `  <Record action="${baseUrl}/recording-noop" recordingStatusCallback="${baseUrl}/recording-callback" recordingStatusCallbackMethod="POST" trim="trim-silence" />`
-    : '';
+  const doRecord = cfgTwiml.enregistrement_actif ? 'true' : 'false';
   console.log(`[TWIML] enregistrement_actif:${cfgTwiml.enregistrement_actif||false} pour ${toKey}`);
 
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-${recordTag}
   <Connect>
     <Stream url="wss://ws-staging.voiceimmo.fr">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
+      <Parameter name="record" value="${doRecord}" />
     </Stream>
   </Connect>
 </Response>`);
@@ -871,11 +870,35 @@ wss.on('connection', (ws, req) => {
       callSid      = params.sid    || params.CallSid || m.start?.callSid || '';
       const caller = params.caller || params.From || m.start?.from || '';
       const to     = params.to     || params.To   || m.start?.to   || '';
-      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to}`);
+      const doRecord = params.record === 'true';
+      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to} record=${doRecord}`);
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
       cfg = getConfig(to || '');
       connectOAI(lead.tel);
       callTimer = setTimeout(() => { console.log('[TIMER] 2min → raccrocher'); hangup(); }, 120000);
+
+      // Déclencher l'enregistrement via API REST Twilio (pas via TwiML pour ne pas couper le stream)
+      if (doRecord && callSid && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        setTimeout(async () => {
+          try {
+            const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+            const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
+            const recResp = await fetch(
+              `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}/Recordings.json`,
+              {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `RecordingStatusCallback=${encodeURIComponent(baseUrl + '/recording-callback')}&RecordingStatusCallbackMethod=POST`
+              }
+            );
+            const recData = await recResp.json();
+            if (recData.sid) console.log(`[REC] ✅ Enregistrement démarré: ${recData.sid}`);
+            else console.warn('[REC] ⚠️ Réponse Twilio:', JSON.stringify(recData));
+          } catch(e) {
+            console.warn('[REC] ⚠️ Erreur démarrage enregistrement:', e.message);
+          }
+        }, 2000); // 2s après le stream pour laisser l'appel s'établir
+      }
     }
     else if (m.event === 'media' && m.media?.payload) {
       if (oai && oai.readyState === WebSocket.OPEN && ready) {
