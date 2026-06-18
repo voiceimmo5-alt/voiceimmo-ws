@@ -230,6 +230,9 @@ async function sendResend(to, subject, html) {
   return true;
 }
 
+// ─── Pending emails (attend le recording avant envoi) ───────────────────────
+const pendingEmails = new Map(); // callSid → { lead, cfg, transcript, timer }
+
 // ─── Email notification lead ──────────────────────────────────────────────────
 async function sendEmail(lead, cfg, transcript, recordingUrl) {
   if (!RESEND_API_KEY) {
@@ -258,7 +261,11 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
       + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
       + '</table>'
-      + (recordingUrl ? '<p style="margin-top:20px;color:#6b7280;font-size:13px">Enregistrement de l\'appel en piece jointe.</p>' : '')
+      + (recordingUrl ? '<p style="margin-top:20px;color:#6b7280;font-size:13px">&#127897; Enregistrement de l\'appel en pi&egrave;ce jointe.</p>' : '')
+      + '<div style="margin-top:24px;text-align:center">'
+      + '<a href="' + (process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr') + '/mark-lead-done?id=' + (lead.id||'') + '" '
+      + 'style="display:inline-block;background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:12px 32px;border-radius:10px;font-weight:700;font-size:15px">&#9989; Marquer comme Trait&eacute;</a>'
+      + '</div>'
       + '</div></div>';
 
     // Construire l'email avec ou sans pièce jointe MP3
@@ -797,7 +804,26 @@ wss.on('connection', (ws, req) => {
     hangup();
     const activeCfg = cfg || DEF_CFG();
     await Promise.all([
-      sendEmail(lead, activeCfg, transcript, lead.recording_url),
+      (async () => {
+        // Stocker l'email en attente — sera envoyé quand le recording arrive (ou timeout 45s)
+        const sid = callSid;
+        if (sid) {
+          pendingEmails.set(sid, { lead: {...lead}, cfg: activeCfg, transcript: [...transcript] });
+          // Timeout de sécurité : envoyer sans MP3 après 45s si le recording n'arrive pas
+          const t = setTimeout(async () => {
+            const pending = pendingEmails.get(sid);
+            if (pending) {
+              pendingEmails.delete(sid);
+              console.log('[EMAIL] ⏱️ Timeout recording — envoi sans MP3');
+              await sendEmail(pending.lead, pending.cfg, pending.transcript, null);
+            }
+          }, 45000);
+          pendingEmails.get(sid).timer = t;
+          console.log('[EMAIL] ⏳ Email en attente du recording pour callSid:', sid);
+        } else {
+          await sendEmail(lead, activeCfg, transcript, null);
+        }
+      })(),
       saveLead({ ...lead, transcript, callSid }, activeCfg),
       incrementAppels(activeCfg),
     ]);
@@ -1059,6 +1085,42 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
     else console.warn('[REC] ⚠️ updateLeadRecording:', JSON.stringify(data));
   } catch(e) {
     console.warn('[REC] ⚠️ Exception updateLeadRecording:', e.message);
+  }
+
+  // Envoyer l'email en attente avec le MP3 en pièce jointe
+  const pending = pendingEmails.get(CallSid);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingEmails.delete(CallSid);
+    console.log('[EMAIL] 🎙️ Recording reçu — envoi email avec MP3');
+    pending.lead.recording_url = mp3Url;
+    await sendEmail(pending.lead, pending.cfg, pending.transcript, mp3Url);
+  } else {
+    console.log('[EMAIL] ℹ️ Pas d\'email en attente pour ce callSid:', CallSid);
+  }
+});
+
+// ─── Route : marquer lead comme Traité depuis email ─────────────────────────
+app.get('/mark-lead-done', async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).send('Paramètre manquant');
+  try {
+    const r = await fetch(`${BASE44_APP_URL}/clientAuth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'update_lead', id: id, statut: 'Clôturé' }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      console.log('[MARK] ✅ Lead', id, 'marqué Clôturé');
+      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Traité</title></head><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f0fdf4"><div style="font-size:64px">✅</div><h2 style="color:#10b981">Lead marqué comme Traité !</h2><p style="color:#6b7280">Vous pouvez fermer cette fenêtre.</p></body></html>`);
+    } else {
+      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><div style="font-size:64px">⚠️</div><h2>Erreur</h2><p>${JSON.stringify(d)}</p></body></html>`);
+    }
+  } catch(e) {
+    console.error('[MARK] ❌', e.message);
+    return res.status(500).send('Erreur: ' + e.message);
   }
 });
 
