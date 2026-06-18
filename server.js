@@ -551,6 +551,29 @@ app.get('/stats', async (req, res) => {
   res.json({ ok: true, version: 'v54-stripe', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
+
+// ─── Proxy audio Twilio (évite l'auth Basic dans le navigateur) ──────────────
+app.get('/recording/:sid', async (req, res) => {
+  const sid = req.params.sid;
+  if (!sid || !sid.startsWith('RE')) return res.status(400).send('Invalid SID');
+  try {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken  = process.env.TWILIO_AUTH_TOKEN;
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${sid}.mp3`;
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    const upstream = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
+    if (!upstream.ok) return res.status(upstream.status).send('Recording not found');
+    res.set('Content-Type', 'audio/mpeg');
+    res.set('Cache-Control', 'private, max-age=3600');
+    // Stream le body directement
+    const arrayBuf = await upstream.arrayBuffer();
+    res.send(Buffer.from(arrayBuf));
+  } catch(e) {
+    console.warn('[REC-PROXY] Erreur:', e.message);
+    res.status(500).send('Proxy error');
+  }
+});
+
 app.post('/twiml', (req, res) => {
   const caller = req.body.From   || req.body.Caller || '';
   const to     = req.body.To     || req.body.Called || '';
@@ -776,8 +799,12 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        const accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
-        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
+        let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
+        // Injecter la mention RGPD si enregistrement actif
+        if (cfg?.enregistrement_actif) {
+          accueil = injectRecordingMention(accueil, cfg?.voix);
+        }
+        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
@@ -975,8 +1002,8 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
   console.log(`[REC] Callback — CallSid:${CallSid} RecordingSid:${RecordingSid} Status:${RecordingStatus}`);
   if (RecordingStatus !== 'completed' || !RecordingUrl || !CallSid) return;
 
-  // URL MP3 Twilio (ajouter .mp3 pour accès direct)
-  const mp3Url = RecordingUrl + '.mp3';
+  // URL proxy via notre backend (évite la popup d'auth Twilio dans le navigateur)
+  const mp3Url = `${process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr'}/recording/${RecordingSid}`;
   console.log(`[REC] ✅ Enregistrement prêt: ${mp3Url}`);
 
   // Mettre à jour le Lead correspondant dans Base44
