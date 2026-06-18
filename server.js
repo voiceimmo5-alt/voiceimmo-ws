@@ -726,6 +726,11 @@ wss.on('connection', (ws, req) => {
 
   async function flush() {
     if (saved) return; saved = true;
+    // Capturer la dernière réplique de Sophie si non terminée
+    if (curAss && curAss.trim()) {
+      transcript.push({ r: 'a', t: curAss.trim() });
+      curAss = '';
+    }
     hangup();
     const activeCfg = cfg || DEF_CFG();
     await Promise.all([
