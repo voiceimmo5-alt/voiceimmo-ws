@@ -231,7 +231,7 @@ async function sendResend(to, subject, html) {
 }
 
 // ─── Email notification lead ──────────────────────────────────────────────────
-async function sendEmail(lead, cfg, transcript) {
+async function sendEmail(lead, cfg, transcript, recordingUrl) {
   if (!RESEND_API_KEY) {
     console.log('[EMAIL] RESEND_API_KEY absent → email ignoré');
     return false;
@@ -244,10 +244,6 @@ async function sendEmail(lead, cfg, transcript) {
     const destAgent = agentTrouve ? agentTrouve.email : null;
     const destList = [...new Set([...(cfg.destinataires_email||[]), destAgent, 'voiceimmo5@gmail.com'].filter(Boolean))];
     const agentLabel = agentTrouve ? agentTrouve.nom : (lead.agent_initiales || 'N/A');
-    const transcriptHtml = Array.isArray(transcript) ? transcript.map(t =>
-      '<tr><td style="color:' + (t.r==='a'?'#7c3aed':'#1d4ed8') + ';padding:4px 12px;font-weight:bold">' + (t.r==='a'?'Sophie':'Appelant') + '</td>'
-      + '<td style="padding:4px 12px">' + t.t + '</td></tr>'
-    ).join('') : '';
     const html = '<div style="font-family:sans-serif;max-width:600px;margin:0 auto">'
       + '<div style="background:#4f46e5;color:#fff;padding:24px;border-radius:12px 12px 0 0">'
       + '<h2 style="margin:0">&#127968; Nouveau lead &mdash; ' + (cfg.nom_agence||'VoiceImmo') + '</h2>'
@@ -262,9 +258,53 @@ async function sendEmail(lead, cfg, transcript) {
       + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
       + '</table>'
-      + (transcriptHtml ? '<h3 style="margin-top:24px">Transcription</h3><table style="width:100%;border-collapse:collapse;font-size:14px">' + transcriptHtml + '</table>' : '')
+      + (recordingUrl ? '<p style="margin-top:20px;color:#6b7280;font-size:13px">Enregistrement de l\'appel en piece jointe.</p>' : '')
       + '</div></div>';
-    await sendResend(destList, 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu'), html);
+
+    // Construire l'email avec ou sans pièce jointe MP3
+    const emailPayload = {
+      from: 'VoiceImmo <no-reply@voxzen.io>',
+      to: destList,
+      subject: 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu'),
+      html
+    };
+
+    // Attacher l'enregistrement MP3 si disponible
+    if (recordingUrl) {
+      try {
+        const accountSid = process.env.TWILIO_ACCOUNT_SID;
+        const authToken  = process.env.TWILIO_AUTH_TOKEN;
+        // Extraire le RecordingSid depuis l'URL proxy ws-staging.voiceimmo.fr/recording/RExxxx
+        const recSidMatch = recordingUrl.match(/\/recording\/(RE[a-z0-9]+)/i);
+        if (recSidMatch) {
+          const recSid = recSidMatch[1];
+          const twilioMp3Url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${recSid}.mp3`;
+          const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+          const mp3Res = await fetch(twilioMp3Url, { headers: { 'Authorization': authHeader } });
+          if (mp3Res.ok) {
+            const mp3Buf = await mp3Res.arrayBuffer();
+            const mp3B64 = Buffer.from(mp3Buf).toString('base64');
+            const nomLead = (lead.nom || 'lead').replace(/\s+/g, '_');
+            emailPayload.attachments = [{
+              filename: `appel_${nomLead}.mp3`,
+              content: mp3B64,
+              type: 'audio/mpeg',
+              disposition: 'attachment'
+            }];
+            console.log('[EMAIL] 🎙️ MP3 attaché (' + Math.round(mp3Buf.byteLength / 1024) + ' KB)');
+          }
+        }
+      } catch(e) {
+        console.warn('[EMAIL] ⚠️ Impossible d\'attacher le MP3:', e.message);
+      }
+    }
+
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(emailPayload)
+    });
+    if (!res.ok) throw new Error('Resend ' + res.status + ': ' + await res.text());
     console.log('[EMAIL] ✅ Email envoyé via Resend à:', destList.join(', '));
     return true;
   } catch(e) {
@@ -757,7 +797,7 @@ wss.on('connection', (ws, req) => {
     hangup();
     const activeCfg = cfg || DEF_CFG();
     await Promise.all([
-      sendEmail(lead, activeCfg, transcript),
+      sendEmail(lead, activeCfg, transcript, lead.recording_url),
       saveLead({ ...lead, transcript, callSid }, activeCfg),
       incrementAppels(activeCfg),
     ]);
@@ -781,7 +821,7 @@ wss.on('connection', (ws, req) => {
           audio: {
             input: {
               format: { type: 'audio/pcmu' },
-              transcription: { model: 'whisper-1', language: 'fr' },
+              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
               turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
             },
             output: {
