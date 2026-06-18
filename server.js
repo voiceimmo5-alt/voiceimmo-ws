@@ -770,7 +770,7 @@ wss.on('connection', (ws, req) => {
       }));
     });
 
-    oai.on('message', (data) => {
+    oai.on('message', async (data) => {
       let m;
       try { m = JSON.parse(data); } catch(_) { return; }
 
@@ -796,24 +796,20 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
 
-      // Source alternative : response.output_item.done (item.formatted.transcript)
-      if (m.type === 'response.output_item.done' && m.item?.formatted?.transcript) {
-        const t = m.item.formatted.transcript.trim();
-        if (t && !transcript.some(e => e.r === 'a' && e.t === t)) {
-          transcript.push({ r: 'a', t });
-          console.log(`[IA-ITEM] "${t.slice(0, 100)}"`);
-        }
-      }
-
-      if (m.type === 'response.audio_transcript.done' && curAss) {
-        transcript.push({ r: 'a', t: curAss });
-        console.log(`[IA] "${curAss.slice(0, 100)}"`);
-        // Détection phrase de fin → raccrocher après 2s
-        const finPhrases = /au revoir|à très bientôt|bientôt|bonne journée|bonne soirée|rappeler très rapidement/i;
-        if (finPhrases.test(curAss)) {
+      // Détection phrase de fin + sauvegarde transcript Sophie
+      async function handleSophieTranscript(text) {
+        if (!text || !text.trim()) return;
+        const t = text.trim();
+        // Éviter les doublons
+        if (transcript.some(e => e.r === 'a' && e.t === t)) return;
+        transcript.push({ r: 'a', t });
+        console.log(`[IA] "${t.slice(0, 100)}"`);
+        // Détection phrase de fin → raccrocher dans 5s
+        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
+        if (finPhrases.test(t)) {
           console.log('[FIN] Phrase de fin détectée → raccrochage dans 5s');
           setTimeout(async () => {
-            console.log('[FIN] → fermeture WebSocket (méthode principale)');
+            console.log('[FIN] → fermeture WebSocket');
             try { ws.close(); } catch(_) {}
             try { if (oai) oai.close(); } catch(_) {}
             if (callSid) {
@@ -830,7 +826,18 @@ wss.on('connection', (ws, req) => {
             await flush();
           }, 5000);
         }
+      }
+
+      // Source 1 : response.audio_transcript.done (event standard)
+      if (m.type === 'response.audio_transcript.done' && curAss) {
+        await handleSophieTranscript(curAss);
         curAss = '';
+      }
+
+      // Source 2 : response.output_item.done → item.formatted.transcript (fallback fiable)
+      if (m.type === 'response.output_item.done' && m.item?.formatted?.transcript) {
+        await handleSophieTranscript(m.item.formatted.transcript);
+        if (!curAss) curAss = ''; // reset si déjà capturé
       }
 
       // Après le message d'accueil → Sophie enchaîne directement sur l'étape 1
