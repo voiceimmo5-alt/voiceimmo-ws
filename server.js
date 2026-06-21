@@ -154,14 +154,15 @@ function mapClientToConfig(c) {
     }
   }
   return {
-    nom_agence:          c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
-    client_db_id:        c.id || fallback.client_db_id,
-    voix:                c.voix || fallback.voix || 'coral',
-    site_internet:       c.site_internet || fallback.site_internet || '',
-    message_accueil:     c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
-    instructions_ia:     c.instructions_ia || null,
+    nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
+    client_db_id:         c.id || fallback.client_db_id,
+    voix:                 c.voix || fallback.voix || 'coral',
+    site_internet:        c.site_internet || fallback.site_internet || '',
+    message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
+    instructions_ia:      c.instructions_ia || null,
     agents_arr,
-    destinataires_email: dest,
+    destinataires_email:  dest,
+    enregistrement_actif: c.enregistrement_actif === true,
   };
 }
 
@@ -229,8 +230,11 @@ async function sendResend(to, subject, html) {
   return true;
 }
 
+// ─── Pending emails (attend le recording avant envoi) ───────────────────────
+const pendingEmails = new Map(); // callSid → { lead, cfg, transcript, timer }
+
 // ─── Email notification lead ──────────────────────────────────────────────────
-async function sendEmail(lead, cfg, transcript) {
+async function sendEmail(lead, cfg, transcript, recordingUrl) {
   if (!RESEND_API_KEY) {
     console.log('[EMAIL] RESEND_API_KEY absent → email ignoré');
     return false;
@@ -243,10 +247,6 @@ async function sendEmail(lead, cfg, transcript) {
     const destAgent = agentTrouve ? agentTrouve.email : null;
     const destList = [...new Set([...(cfg.destinataires_email||[]), destAgent, 'voiceimmo5@gmail.com'].filter(Boolean))];
     const agentLabel = agentTrouve ? agentTrouve.nom : (lead.agent_initiales || 'N/A');
-    const transcriptHtml = Array.isArray(transcript) ? transcript.map(t =>
-      '<tr><td style="color:' + (t.r==='a'?'#7c3aed':'#1d4ed8') + ';padding:4px 12px;font-weight:bold">' + (t.r==='a'?'Sophie':'Appelant') + '</td>'
-      + '<td style="padding:4px 12px">' + t.t + '</td></tr>'
-    ).join('') : '';
     const html = '<div style="font-family:sans-serif;max-width:600px;margin:0 auto">'
       + '<div style="background:#4f46e5;color:#fff;padding:24px;border-radius:12px 12px 0 0">'
       + '<h2 style="margin:0">&#127968; Nouveau lead &mdash; ' + (cfg.nom_agence||'VoiceImmo') + '</h2>'
@@ -254,16 +254,64 @@ async function sendEmail(lead, cfg, transcript) {
       + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
       + '<table style="width:100%;border-collapse:collapse">'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Nom</td><td style="padding:8px">' + (lead.nom||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px">' + (lead.telephone||'N/A') + '</td></tr>'
+      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:' + (lead.telephone||'').replace(/\s/g,'') + '" style="color:#4f46e5;font-weight:700;text-decoration:none;font-size:16px">' + (lead.telephone||'N/A') + '</a></td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Besoin</td><td style="padding:8px">' + (lead.besoin||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;font-weight:bold">Ville</td><td style="padding:8px">' + (lead.ville||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Prix</td><td style="padding:8px">' + (lead.prix||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
       + '</table>'
-      + (transcriptHtml ? '<h3 style="margin-top:24px">Transcription</h3><table style="width:100%;border-collapse:collapse;font-size:14px">' + transcriptHtml + '</table>' : '')
+      + (recordingUrl ? '<p style="margin-top:20px;color:#6b7280;font-size:13px">&#127897; Enregistrement de l\'appel en pi&egrave;ce jointe.</p>' : '')
+      + '<div style="margin-top:24px;text-align:center">'
+      + '<a href="' + (process.env.WS_BASE_URL || 'https://ws.voiceimmo.fr') + '/mark-lead-done?id=' + (lead.id||'') + '" '
+      + 'style="display:inline-block;background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:12px 32px;border-radius:10px;font-weight:700;font-size:15px">&#9989; Marquer comme Trait&eacute;</a>'
+      + '</div>'
       + '</div></div>';
-    await sendResend(destList, 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu'), html);
+
+    // Construire l'email avec ou sans pièce jointe MP3
+    const emailPayload = {
+      from: 'VoiceImmo <no-reply@voxzen.io>',
+      to: destList,
+      subject: 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu'),
+      html
+    };
+
+    // Attacher l'enregistrement MP3 si disponible
+    if (recordingUrl) {
+      try {
+        const accountSid = process.env.TWILIO_ACCOUNT_SID;
+        const authToken  = process.env.TWILIO_AUTH_TOKEN;
+        // Extraire le RecordingSid depuis l'URL proxy ws.voiceimmo.fr/recording/RExxxx
+        const recSidMatch = recordingUrl.match(/\/recording\/(RE[a-z0-9]+)/i);
+        if (recSidMatch) {
+          const recSid = recSidMatch[1];
+          const twilioMp3Url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${recSid}.mp3`;
+          const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+          const mp3Res = await fetch(twilioMp3Url, { headers: { 'Authorization': authHeader } });
+          if (mp3Res.ok) {
+            const mp3Buf = await mp3Res.arrayBuffer();
+            const mp3B64 = Buffer.from(mp3Buf).toString('base64');
+            const nomLead = (lead.nom || 'lead').replace(/\s+/g, '_');
+            emailPayload.attachments = [{
+              filename: `appel_${nomLead}.mp3`,
+              content: mp3B64,
+              type: 'audio/mpeg',
+              disposition: 'attachment'
+            }];
+            console.log('[EMAIL] 🎙️ MP3 attaché (' + Math.round(mp3Buf.byteLength / 1024) + ' KB)');
+          }
+        }
+      } catch(e) {
+        console.warn('[EMAIL] ⚠️ Impossible d\'attacher le MP3:', e.message);
+      }
+    }
+
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(emailPayload)
+    });
+    if (!res.ok) throw new Error('Resend ' + res.status + ': ' + await res.text());
     console.log('[EMAIL] ✅ Email envoyé via Resend à:', destList.join(', '));
     return true;
   } catch(e) {
@@ -527,7 +575,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: 'prod-migration-20260621' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -550,11 +598,43 @@ app.get('/stats', async (req, res) => {
   res.json({ ok: true, version: 'v54-stripe', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
+
+// ─── Proxy audio Twilio (évite l'auth Basic dans le navigateur) ──────────────
+app.get('/recording/:sid', async (req, res) => {
+  const sid = req.params.sid;
+  if (!sid || !sid.startsWith('RE')) return res.status(400).send('Invalid SID');
+  try {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken  = process.env.TWILIO_AUTH_TOKEN;
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${sid}.mp3`;
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    const upstream = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
+    if (!upstream.ok) return res.status(upstream.status).send('Recording not found');
+    res.set('Content-Type', 'audio/mpeg');
+    res.set('Cache-Control', 'private, max-age=3600');
+    // Stream le body directement
+    const arrayBuf = await upstream.arrayBuffer();
+    res.send(Buffer.from(arrayBuf));
+  } catch(e) {
+    console.warn('[REC-PROXY] Erreur:', e.message);
+    res.status(500).send('Proxy error');
+  }
+});
+
 app.post('/twiml', (req, res) => {
   const caller = req.body.From   || req.body.Caller || '';
   const to     = req.body.To     || req.body.Called || '';
   const sid    = req.body.CallSid|| '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
+  const baseUrl = process.env.SERVER_BASE_URL || 'https://ws.voiceimmo.fr';
+
+  // Enregistrement : on passe l'info via paramètre au WebSocket
+  // L'enregistrement sera déclenché via API REST Twilio après établissement du stream
+  const toKey = to.startsWith('+') ? to : '+' + to;
+  const cfgTwiml = CONFIGS[toKey] || DEF_CFG();
+  const doRecord = cfgTwiml.enregistrement_actif ? 'true' : 'false';
+  console.log(`[TWIML] enregistrement_actif:${cfgTwiml.enregistrement_actif||false} pour ${toKey}`);
+
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -563,25 +643,53 @@ app.post('/twiml', (req, res) => {
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
+      <Parameter name="record" value="${doRecord}" />
     </Stream>
   </Connect>
 </Response>`);
 });
 
+// ─── Mention légale enregistrement ───────────────────────────────────────────
+function getRecordingMention(voix) {
+  // Adapté selon la voix (toutes féminines en français par défaut)
+  const voixMasc = ['alloy', 'echo', 'onyx', 'fable'];
+  const estMasc  = voixMasc.includes((voix||'coral').toLowerCase());
+  if (estMasc) {
+    return "Pour améliorer la qualité de notre service, cet appel peut être enregistré. ";
+  }
+  return "Pour améliorer la qualité de notre service, cet appel peut être enregistré. ";
+}
+
+function injectRecordingMention(messageAccueil, voix) {
+  const mention = getRecordingMention(voix);
+  // Insérer la mention après la première phrase (après le premier point ou virgule)
+  const match = messageAccueil.match(/^([^.!?]+[.!?]\s*)/);
+  if (match) {
+    return match[0] + mention + messageAccueil.slice(match[0].length);
+  }
+  return messageAccueil + ' ' + mention;
+}
+
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
 function buildPrompt(c, callerNum) {
   // Priorité 1 : instructions_ia personnalisées depuis la base de données
   if (c.instructions_ia && c.instructions_ia.trim()) {
-    const prompt = c.instructions_ia
+    let prompt = c.instructions_ia
       .replace(/\{\{CALLER\}\}/g, callerNum)
       .replace(/\{\{NUM\}\}/g, callerNum);
-    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum);
+    // Injecter mention légale si enregistrement activé
+    if (c.enregistrement_actif) {
+      const mention = getRecordingMention(c.voix);
+      prompt = mention + prompt;
+    }
+    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
   // Priorité 2 : prompt générique fallback
   console.log('[PROMPT] ⚠️ Fallback prompt générique pour', c.nom_agence);
   const agentsStr = (c.agents_arr || []).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
-  return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+  return `${recordMention}Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
@@ -621,9 +729,33 @@ wss.on('connection', (ws, req) => {
   let accueilDone = false;
   let callTimer  = null;
 
+  let hangingUp = false; // garde-fou anti-double-raccrochage
+
+  async function hangupTwilio(sid) {
+    if (!sid) return;
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) return;
+    try {
+      const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+      const r = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${sid}.json`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'Status=completed'
+        }
+      );
+      const status = r.status;
+      console.log(`[HANGUP] REST Twilio → HTTP ${status}`);
+    } catch(e) {
+      console.warn('[HANGUP] REST error:', e.message);
+    }
+  }
+
   function hangup() {
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
     if (oai && oai.readyState === WebSocket.OPEN) oai.close();
+    // Fermer aussi le WebSocket Twilio Media Stream pour libérer la connexion
+    try { if (ws.readyState === ws.OPEN) ws.close(); } catch(_) {}
   }
 
 
@@ -642,6 +774,7 @@ wss.on('connection', (ws, req) => {
         statut:           'Nouveau',
         email_envoye:     true,
         client_id:        cfgData?.client_db_id || null,
+        call_sid:         leadData.callSid || '',
         notes:            leadData.transcript && leadData.transcript.length
           ? 'Discussion:\n' + leadData.transcript.map(e =>
               (e.r === 'a' ? 'Sophie: ' : 'Client: ') + e.t
@@ -687,11 +820,35 @@ wss.on('connection', (ws, req) => {
 
   async function flush() {
     if (saved) return; saved = true;
+    // Capturer la dernière réplique de Sophie si non terminée
+    if (curAss && curAss.trim()) {
+      transcript.push({ r: 'a', t: curAss.trim() });
+      curAss = '';
+    }
     hangup();
     const activeCfg = cfg || DEF_CFG();
     await Promise.all([
-      sendEmail(lead, activeCfg, transcript),
-      saveLead({ ...lead, transcript }, activeCfg),
+      (async () => {
+        // Stocker l'email en attente — sera envoyé quand le recording arrive (ou timeout 45s)
+        const sid = callSid;
+        if (sid) {
+          pendingEmails.set(sid, { lead: {...lead}, cfg: activeCfg, transcript: [...transcript] });
+          // Timeout de sécurité : envoyer sans MP3 après 45s si le recording n'arrive pas
+          const t = setTimeout(async () => {
+            const pending = pendingEmails.get(sid);
+            if (pending) {
+              pendingEmails.delete(sid);
+              console.log('[EMAIL] ⏱️ Timeout recording — envoi sans MP3');
+              await sendEmail(pending.lead, pending.cfg, pending.transcript, null);
+            }
+          }, 45000);
+          pendingEmails.get(sid).timer = t;
+          console.log('[EMAIL] ⏳ Email en attente du recording pour callSid:', sid);
+        } else {
+          await sendEmail(lead, activeCfg, transcript, null);
+        }
+      })(),
+      saveLead({ ...lead, transcript, callSid }, activeCfg),
       incrementAppels(activeCfg),
     ]);
   }
@@ -714,7 +871,7 @@ wss.on('connection', (ws, req) => {
           audio: {
             input: {
               format: { type: 'audio/pcmu' },
-              transcription: { model: 'whisper-1', language: 'fr' },
+              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
               turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
             },
             output: {
@@ -726,14 +883,18 @@ wss.on('connection', (ws, req) => {
       }));
     });
 
-    oai.on('message', (data) => {
+    oai.on('message', async (data) => {
       let m;
       try { m = JSON.parse(data); } catch(_) { return; }
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        const accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
-        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
+        let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
+        // Injecter la mention RGPD si enregistrement actif
+        if (cfg?.enregistrement_actif) {
+          accueil = injectRecordingMention(accueil, cfg?.voix);
+        }
+        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
@@ -751,32 +912,41 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
-      if (m.type === 'response.audio_transcript.done' && curAss) {
-        transcript.push({ r: 'a', t: curAss });
-        console.log(`[IA] "${curAss.slice(0, 100)}"`);
-        // Détection phrase de fin → raccrocher après 2s
-        const finPhrases = /au revoir|à très bientôt|bientôt|bonne journée|bonne soirée|rappeler très rapidement/i;
-        if (finPhrases.test(curAss)) {
-          console.log('[FIN] Phrase de fin détectée → raccrochage dans 5s');
+
+      // Détection phrase de fin + sauvegarde transcript Sophie
+      async function handleSophieTranscript(text) {
+        if (!text || !text.trim()) return;
+        const t = text.trim();
+        // Éviter les doublons
+        if (transcript.some(e => e.r === 'a' && e.t === t)) return;
+        transcript.push({ r: 'a', t });
+        console.log(`[IA] "${t.slice(0, 100)}"`);
+        // Détection phrase de fin → raccrocher dans 5s
+        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
+        if (finPhrases.test(t) && !hangingUp) {
+          hangingUp = true;
+          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
           setTimeout(async () => {
-            console.log('[FIN] → fermeture WebSocket (méthode principale)');
-            try { ws.close(); } catch(_) {}
-            try { if (oai) oai.close(); } catch(_) {}
-            if (callSid) {
-              try {
-                const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-                await fetch(`https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: 'Status=completed'
-                });
-                console.log('[FIN] REST Twilio envoyé');
-              } catch(e) { console.warn('[FIN] REST error:', e.message); }
-            }
+            // 1. API REST Twilio EN PREMIER → raccroche le téléphone physiquement
+            await hangupTwilio(callSid);
+            // 2. Fermer les connexions WebSocket
+            hangup();
+            // 3. Sauvegarder le lead + envoyer email
             await flush();
-          }, 5000);
+          }, 2000);
         }
+      }
+
+      // Source 1 : response.audio_transcript.done (event standard)
+      if (m.type === 'response.audio_transcript.done' && curAss) {
+        await handleSophieTranscript(curAss);
         curAss = '';
+      }
+
+      // Source 2 : response.output_item.done → item.formatted.transcript (fallback fiable)
+      if (m.type === 'response.output_item.done' && m.item?.formatted?.transcript) {
+        await handleSophieTranscript(m.item.formatted.transcript);
+        if (!curAss) curAss = ''; // reset si déjà capturé
       }
 
       // Après le message d'accueil → Sophie enchaîne directement sur l'étape 1
@@ -803,20 +973,29 @@ wss.on('connection', (ws, req) => {
   }
 
   function parseLeadInfo(text) {
-    if (!lead.nom && /je m.appelle|c.est |mon nom est/i.test(text)) {
-      const m = text.match(/(?:je m.appelle|c.est|mon nom est)\s+([A-ZÀ-Ý][a-zà-ý]+(?:\s+[A-ZÀ-Ý][a-zà-ý]+)*)/i);
-      if (m) lead.nom = m[1];
+    // Nom : "je m'appelle X", "c'est X Y" (prénom + nom obligatoire), "mon nom est X"
+    if (!lead.nom) {
+      const mApp = text.match(/je m.appelle\s+([A-ZÀ-Ýa-zà-ý]+(?:\s+[A-ZÀ-Ýa-zà-ý]+)+)/i);
+      const mNom = text.match(/mon nom est\s+([A-ZÀ-Ýa-zà-ý]+(?:\s+[A-ZÀ-Ýa-zà-ý]+)+)/i);
+      // "c'est X Y" : exige au moins prénom + nom (2 mots min, premiers en majuscule)
+      const mCest = text.match(/c.est\s+([A-ZÀ-Ý][a-zà-ý]+\s+[A-ZÀ-Ý][a-zà-ý]+)/);
+      if (mApp) lead.nom = mApp[1];
+      else if (mNom) lead.nom = mNom[1];
+      else if (mCest) lead.nom = mCest[1];
     }
     if (!lead.besoin && /acheter|achat|vendre|vente|louer|location|estim/i.test(text)) {
       const m = text.match(/(acheter|achat|vendre|vente|louer|location|estimation)/i);
       if (m) lead.besoin = m[1];
     }
     if (!lead.ville) {
-      const m = text.match(/(?:à|sur|secteur|ville de|commune de)\s+([A-ZÀ-Ý][a-zà-ý\-]+(?:\s+[A-ZÀ-Ý][a-zà-ý\-]+)*)/i);
-      if (m) lead.ville = m[1];
+      // Ville : "à Lyon", "sur Paris", "secteur Bordeaux" — exige une vraie ville (maj + min, min 3 chars)
+      // Exclus les faux positifs : "plus", "bientôt", "accord", etc.
+      const exclus = /^(plus|bientôt|accord|revoir|tout|cela|ça|voix|départ|arrivée|suite|nouveau)$/i;
+      const m = text.match(/(?:à|sur|secteur|ville de|commune de|habite à|situé à|recherche à)\s+([A-ZÀ-Ý][a-zà-ý\-]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ý\-]+)*)/i);
+      if (m && !exclus.test(m[1].trim())) lead.ville = m[1];
     }
     if (!lead.prix) {
-      const m = text.match(/(\d[\d\s]*(?:euros?|€|k€|000))/i);
+      const m = text.match(/(\d[\d\s\.]*(?:euros?|€|k€|000\b))/i);
       if (m) lead.prix = m[1];
     }
   }
@@ -831,11 +1010,41 @@ wss.on('connection', (ws, req) => {
       callSid      = params.sid    || params.CallSid || m.start?.callSid || '';
       const caller = params.caller || params.From || m.start?.from || '';
       const to     = params.to     || params.To   || m.start?.to   || '';
-      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to}`);
+      const doRecord = params.record === 'true';
+      console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to} record=${doRecord}`);
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
       cfg = getConfig(to || '');
       connectOAI(lead.tel);
-      callTimer = setTimeout(() => { console.log('[TIMER] 2min → raccrocher'); hangup(); }, 120000);
+      callTimer = setTimeout(async () => {
+        console.log('[TIMER] 2min → raccrochage automatique');
+        hangingUp = true;
+        await hangupTwilio(callSid);
+        hangup();
+        await flush();
+      }, 120000);
+
+      // Déclencher l'enregistrement via API REST Twilio (pas via TwiML pour ne pas couper le stream)
+      if (doRecord && callSid && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        setTimeout(async () => {
+          try {
+            const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+            const baseUrl = process.env.SERVER_BASE_URL || 'https://ws.voiceimmo.fr';
+            const recResp = await fetch(
+              `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}/Recordings.json`,
+              {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `RecordingStatusCallback=${encodeURIComponent(baseUrl + '/recording-callback')}&RecordingStatusCallbackMethod=POST`
+              }
+            );
+            const recData = await recResp.json();
+            if (recData.sid) console.log(`[REC] ✅ Enregistrement démarré: ${recData.sid}`);
+            else console.warn('[REC] ⚠️ Réponse Twilio:', JSON.stringify(recData));
+          } catch(e) {
+            console.warn('[REC] ⚠️ Erreur démarrage enregistrement:', e.message);
+          }
+        }, 2000); // 2s après le stream pour laisser l'appel s'établir
+      }
     }
     else if (m.event === 'media' && m.media?.payload) {
       if (oai && oai.readyState === WebSocket.OPEN && ready) {
@@ -867,6 +1076,76 @@ process.on('unhandledRejection', (reason, promise) => {
 const PORT = process.env.PORT || 8080;
 
 // ─── Route reload-config (appelée par l'app après sauvegarde) ────────────────
+// ─── Webhook Twilio — enregistrement disponible ─────────────────────────────
+app.post('/recording-noop', (req, res) => {
+  // Twilio appelle cette URL quand l'action <Record> se termine (avant Connect)
+  // On ne fait rien — la conversation se poursuit via Connect/Stream
+  res.set('Content-Type', 'text/xml');
+  res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+});
+
+app.post('/recording-callback', express.urlencoded({ extended: true }), async (req, res) => {
+  res.sendStatus(200);
+  const { CallSid, RecordingSid, RecordingUrl, RecordingStatus } = req.body;
+  console.log(`[REC] Callback — CallSid:${CallSid} RecordingSid:${RecordingSid} Status:${RecordingStatus}`);
+  if (RecordingStatus !== 'completed' || !RecordingUrl || !CallSid) return;
+
+  // URL proxy via notre backend (évite la popup d'auth Twilio dans le navigateur)
+  const mp3Url = `${process.env.WS_BASE_URL || 'https://ws.voiceimmo.fr'}/recording/${RecordingSid}`;
+  console.log(`[REC] ✅ Enregistrement prêt: ${mp3Url}`);
+
+  // Mettre à jour le Lead correspondant dans Base44
+  try {
+    const res2 = await fetch(`${BASE44_APP_URL}/updateLeadRecording`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ call_sid: CallSid, recording_url: mp3Url, recording_sid: RecordingSid }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const data = await res2.json();
+    if (data.ok) console.log('[REC] ✅ Lead mis à jour avec recording_url');
+    else console.warn('[REC] ⚠️ updateLeadRecording:', JSON.stringify(data));
+  } catch(e) {
+    console.warn('[REC] ⚠️ Exception updateLeadRecording:', e.message);
+  }
+
+  // Envoyer l'email en attente avec le MP3 en pièce jointe
+  const pending = pendingEmails.get(CallSid);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingEmails.delete(CallSid);
+    console.log('[EMAIL] 🎙️ Recording reçu — envoi email avec MP3');
+    pending.lead.recording_url = mp3Url;
+    await sendEmail(pending.lead, pending.cfg, pending.transcript, mp3Url);
+  } else {
+    console.log('[EMAIL] ℹ️ Pas d\'email en attente pour ce callSid:', CallSid);
+  }
+});
+
+// ─── Route : marquer lead comme Traité depuis email ─────────────────────────
+app.get('/mark-lead-done', async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).send('Paramètre manquant');
+  try {
+    const r = await fetch(`${BASE44_APP_URL}/clientAuth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'update_lead', id: id, statut: 'Clôturé' }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      console.log('[MARK] ✅ Lead', id, 'marqué Clôturé');
+      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Traité</title></head><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f0fdf4"><div style="font-size:64px">✅</div><h2 style="color:#10b981">Lead marqué comme Traité !</h2><p style="color:#6b7280">Vous pouvez fermer cette fenêtre.</p></body></html>`);
+    } else {
+      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><div style="font-size:64px">⚠️</div><h2>Erreur</h2><p>${JSON.stringify(d)}</p></body></html>`);
+    }
+  } catch(e) {
+    console.error('[MARK] ❌', e.message);
+    return res.status(500).send('Erreur: ' + e.message);
+  }
+});
+
 app.post('/reload-config', express.json(), async (req, res) => {
   console.log('[CFG] 🔄 Rechargement forcé depuis l\'app client...');
   try {
