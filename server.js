@@ -575,7 +575,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: 'hangup-fix-20260618' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260622.0715' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -785,7 +785,7 @@ wss.on('connection', (ws, req) => {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(payload),
-        signal:  AbortSignal.timeout(8000)
+        signal:  AbortSignal.timeout(15000)
       });
       const data = await res.json();
       if (data.ok) {
@@ -805,7 +805,7 @@ wss.on('connection', (ws, req) => {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ client_db_id: cfgData?.client_db_id }),
-        signal:  AbortSignal.timeout(8000)
+        signal:  AbortSignal.timeout(15000)
       });
       const data = await res.json();
       if (data.ok) {
@@ -973,15 +973,29 @@ wss.on('connection', (ws, req) => {
   }
 
   function parseLeadInfo(text) {
-    // Nom : "je m'appelle X", "c'est X Y" (prénom + nom obligatoire), "mon nom est X"
+    // Nom : patterns multiples pour couvrir toutes les façons de donner son nom
     if (!lead.nom) {
-      const mApp = text.match(/je m.appelle\s+([A-ZÀ-Ýa-zà-ý]+(?:\s+[A-ZÀ-Ýa-zà-ý]+)+)/i);
-      const mNom = text.match(/mon nom est\s+([A-ZÀ-Ýa-zà-ý]+(?:\s+[A-ZÀ-Ýa-zà-ý]+)+)/i);
-      // "c'est X Y" : exige au moins prénom + nom (2 mots min, premiers en majuscule)
-      const mCest = text.match(/c.est\s+([A-ZÀ-Ý][a-zà-ý]+\s+[A-ZÀ-Ý][a-zà-ý]+)/);
-      if (mApp) lead.nom = mApp[1];
-      else if (mNom) lead.nom = mNom[1];
-      else if (mCest) lead.nom = mCest[1];
+      // Patterns explicites
+      const mApp  = text.match(/je m.appelle\s+([A-ZÀ-Ÿa-zà-ÿ\-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ\-]+)+)/i);
+      const mNom  = text.match(/mon nom est\s+([A-ZÀ-Ÿa-zà-ÿ\-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ\-]+)+)/i);
+      const mCest = text.match(/c.est\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]+\s+[A-ZÀ-Ÿ][a-zà-ÿ\-]+)/);
+      const mSuis = text.match(/je suis\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]+\s+[A-ZÀ-Ÿ][a-zà-ÿ\-]+)/i);
+      // Pattern générique : 2 mots consécutifs Prénom Nom (majuscule + minuscules, min 3 chars chacun)
+      // Exclure les faux positifs communs
+      const EXCLUS_NOM = /^(Bonjour|Merci|Bonne|Journée|Oui|Non|Voilà|Excusez|Désolé|Voici|Allô|Sophie|Madame|Monsieur|Mademoiselle|Bien|Très|Super|Parfait|Accord|Revoir|Bientôt|Pour|Avoir|Faire|Aller|Venir|Prendre|Donner|Trouver|Chercher|Appeler|Vouloir|Pouvoir)$/i;
+      const mDirect = text.match(/^\s*([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,})(?:\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,}))+\s*[,\.!]?\s*$/m);
+
+      if (mApp)  lead.nom = mApp[1].trim();
+      else if (mNom)  lead.nom = mNom[1].trim();
+      else if (mSuis) lead.nom = mSuis[1].trim();
+      else if (mCest) lead.nom = mCest[1].trim();
+      else if (mDirect) {
+        const fullName = mDirect[0].replace(/[,\.!]/, '').trim();
+        const parts = fullName.trim().split(/\s+/);
+        if (parts.length >= 2 && parts.every(p => !EXCLUS_NOM.test(p))) {
+          lead.nom = fullName.trim();
+        }
+      }
     }
     if (!lead.besoin && /acheter|achat|vendre|vente|louer|location|estim/i.test(text)) {
       const m = text.match(/(acheter|achat|vendre|vente|louer|location|estimation)/i);
