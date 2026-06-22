@@ -575,7 +575,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260622.0715' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260622.0722' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -682,6 +682,8 @@ function buildPrompt(c, callerNum) {
       const mention = getRecordingMention(c.voix);
       prompt = mention + prompt;
     }
+    // Toujours injecter le bloc de collecte structurée
+    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
@@ -973,7 +975,19 @@ wss.on('connection', (ws, req) => {
   }
 
   function parseLeadInfo(text) {
-    // Nom : patterns multiples pour couvrir toutes les façons de donner son nom
+    // PRIORITÉ 1 : Format structuré DONNEES: NOM=[...], BESOIN=[...], etc.
+    const mData = text.match(/DONNEES:\s*NOM=\[([^\]]+)\].*?BESOIN=\[([^\]]+)\].*?VILLE=\[([^\]]+)\].*?PRIX=\[([^\]]*)\].*?REF=\[([^\]]*)\]/is);
+    if (mData) {
+      const [, nom, besoin, ville, prix, ref] = mData;
+      if (nom && nom.toLowerCase() !== 'vide' && nom.trim()) lead.nom = nom.trim();
+      if (besoin && besoin.toLowerCase() !== 'vide' && besoin.trim()) lead.besoin = besoin.trim();
+      if (ville && ville.toLowerCase() !== 'vide' && ville.trim()) lead.ville = ville.trim();
+      if (prix && prix.toLowerCase() !== 'vide' && prix.trim()) lead.prix = prix.trim();
+      if (ref && ref.toLowerCase() !== 'vide' && ref.trim()) lead.ref = ref.trim();
+      console.log('[PARSE] ✅ Format structuré détecté → nom:', lead.nom, '| besoin:', lead.besoin, '| ville:', lead.ville);
+      return; // Format structuré trouvé, pas besoin des regex fragiles
+    }
+    // PRIORITÉ 2 : Regex sur transcript libre (fallback)
     if (!lead.nom) {
       // Patterns explicites
       const mApp  = text.match(/je m.appelle\s+([A-ZÀ-Ÿa-zà-ÿ\-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ\-]+)+)/i);
