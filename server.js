@@ -36,7 +36,7 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 
 // ─── Variables d'environnement ──────────────────────────────────────────────
 const OPENAI_API_KEY   = process.env.OPENAI_API_KEY    || '';
-const OAI_MODEL        = process.env.OAI_MODEL         || 'gpt-4o-realtime-preview';
+const OAI_MODEL        = process.env.OAI_MODEL         || 'gpt-4o-realtime-preview-2024-12-17';
 const BASE44_HOSP_URL  = process.env.BASE44_HOSP_URL   || 'https://fr-2758ee0c.base44.app/functions/hospitalityAuth';
 const SERVER_BASE_URL  = process.env.SERVER_BASE_URL   || 'https://hospitality-ws.voiceimmo.fr';
 const PORT             = parseInt(process.env.PORT     || '3001', 10);
