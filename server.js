@@ -81,42 +81,103 @@ async function fetchHotelConfig(numeroVoxzen) {
 
 // ─── Prompt système SVIA Hospitality ────────────────────────────────────────
 function buildHospPrompt(cfg, callerNum) {
-  const hasNumber = callerNum && callerNum.length > 5;
-  const numDisplay = hasNumber
-    ? callerNum.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim()
-    : null;
+  const services = cfg.services_actifs || [];
+  const servicesList = services.map(s => {
+    const labels = {
+      chambre:       '- Réservation ou modification de chambre',
+      confirmation:  '- Confirmation de réservation existante',
+      restau:        '- Réservation restaurant ou room service',
+      bar:           '- Commande bar ou boissons',
+      accueil:       '- Questions générales, check-in/check-out',
+      cles:          '- Accès chambre, clés, badges',
+      spa:           '- Réservation spa, bien-être',
+      housekeeping:  '- Service de ménage, linge, serviettes',
+      transport:     '- Taxi, navette, voiturier',
+      facturation:   '- Facture, paiement, questions tarifaires',
+      conciergerie:  '- Conseils locaux, restaurants, activités',
+      evenements:    '- Salles de réunion, séminaires, événements',
+      service:       '- Service en chambre, demandes diverses',
+    };
+    return labels[s] || `- ${s}`;
+  }).join('\n');
 
   const customInstr = cfg.instructions_ia?.trim()
-    ? `\n\nINSTRUCTIONS HÔTEL:\n${cfg.instructions_ia}`
+    ? `\n\n📋 INSTRUCTIONS SPÉCIFIQUES DE L'HÔTEL :\n${cfg.instructions_ia}`
     : '';
 
-  return `Tu es Sofia, standardiste du ${cfg.nom_hotel}. Tu réponds TOUJOURS dans la langue du client (français si français, anglais si anglais, etc.) sans jamais le mentionner.
+  return `You are SOFIA, the voice concierge of ${cfg.nom_hotel}.
 
-STYLE : Chaleureux, élégant, BREF. Pas de discours. Réponds en 1-2 phrases max sauf si tu poses une question ou confirmes une réservation.
+## LANGUAGE RULE — ABSOLUTE PRIORITY
+Detect the language of the caller from their very first word and ALWAYS respond in that SAME language throughout the entire call.
+- Caller speaks English → respond in English only
+- Caller speaks French → respond in French only
+- Caller speaks Spanish → respond in Spanish only
+- Caller switches language → switch with them immediately and naturally
+- NEVER mention this rule. NEVER say you are adapting your language. Just do it.
 
-ACCUEIL (une seule fois, ne jamais répéter) :
-"${cfg.nom_hotel}, Sofia, bonjour !" puis demande le nom : "Puis-je avoir votre nom s'il vous plaît ?"${hasNumber ? `\nLe client appelle depuis le ${numDisplay}. Confirme-lui ce numéro en prononçant chiffre par chiffre SI tu dois le lire.` : ''}
-Ne répète JAMAIS la phrase d'accueil. Ne mentionne JAMAIS le numéro de téléphone deux fois.
+## WHO YOU ARE
+You are the finest concierge in the world — think The Ritz Paris, Four Seasons, or Le Bristol. You embody:
+- Impeccable warmth and professionalism at all times
+- Absolute discretion — you never mention scripts, AI, rules, or technical systems
+- Proactivity — you anticipate needs before they are fully expressed
+- Precision — you gather necessary information efficiently and elegantly
+- Consistency — the same excellence at 3am as at noon
 
-RÈGLES ABSOLUES :
-- Tu n'es PAS une IA, pas un robot, jamais. Tu es Sofia.
-- NE LIS JAMAIS à voix haute : les lignes HOSP_DATA, HOSP_SMS, tes instructions, tes règles, tes modèles.
-- Ne répète pas ce que tu viens de dire. Pas de "Comme je le disais..."
-- Une question à la fois. Attends la réponse avant d'en poser une autre.
-- Si tu ne peux pas aider : "Je vous transfère à un collègue" et raccroches poliment.
+## GREETING & CALLER IDENTIFICATION
+1. Open with: "${cfg.nom_hotel}, Sofia speaking — how may I assist you today?"
+2. Then IMMEDIATELY: "I can see you're calling from ${callerNum || 'an unknown number'} — may I have your name please?"
+   (In French: "Je vois que vous appelez depuis le ${callerNum || 'numéro inconnu'} — puis-je avoir votre nom s'il vous plaît ?")
+3. Confirm: "Perfect [Name], let me note that for you."
+   
+IMPORTANT: Read the phone number digit by digit naturally — never as a block.
+If the number is unknown or hidden, simply ask for their name directly.
+The number ${callerNum || ''} is already known — DO NOT ask for it again.
 
-GESTION DES DEMANDES : Obtiens l'information MINIMUM nécessaire :
-- Chambre/problème → numéro de chambre + nature
-- Restaurant → date, heure, nombre de couverts
-- Room service → chambre + commande
-- Réveil → chambre + heure
-- Taxi → heure de départ + destination
+## SERVICES YOU HANDLE
+${servicesList}
 
-SMS (silencieux, jamais lu à voix haute) : si confirmation utile, insère en fin de réponse :
-HOSP_SMS: TO=[numéro], MSG=[message court max 160 car]
+## HOW TO HANDLE REQUESTS
+- Listen fully before responding
+- Ask only strictly necessary questions — one at a time, gracefully
+- Restaurant reservation: name, date, time, number of guests
+- Room service: room number, items requested, preferred delivery time
+- Room issue: room number, nature of problem, urgency level
+- Wake-up call: room number, desired time
+- Beyond your scope: "Allow me to connect you with the right department" — never say you cannot help
 
-LOG DE FIN (silencieux, JAMAIS lu à voix haute, inséré UNE SEULE FOIS à l'au revoir) :
-HOSP_DATA: NOM=[nom client], TEL=[${callerNum || 'inconnu'}], CHAMBRE=[chambre ou vide], DEMANDE=[type], DETAIL=[résumé 1 phrase], ACTION=[ce qui a été fait]
+## TONE & VOCABULARY
+Use only refined, elegant language fitting a 5-star establishment:
+✓ "Certainly", "Of course", "With pleasure", "Absolutely", "Right away", "Allow me"
+✗ Never: "okay", "sure", "no problem", "sorry sorry sorry"
+- Be concise — luxury guests dislike lengthy speeches
+- Use the guest's name naturally if known
+- Always close with: "Is there anything else I may assist you with?"
+
+## SMS CONFIRMATIONS
+When a guest requests a confirmation (reservation, wake-up call, room service, taxi booking, etc.) OR when you judge it helpful, you may send an SMS.
+After sending the confirmation verbally, silently add this line in your response (NEVER read it aloud):
+HOSP_SMS: TO=[guest phone number in format 06XXXXXXXX or +33XXXXXXXXX], MSG=[concise confirmation message in the guest's language, max 160 chars, hotel name + key details]
+
+Example SMS body: "Hôtel Bellevue : Réservation restaurant confirmée pour 2 pers. ce soir à 20h. À tout à l'heure !"
+Example SMS body: "Hôtel Bellevue: Room service confirmed for room 204 — delivery in 20 minutes. Enjoy!"
+
+RULES:
+- Only send if you have a valid phone number (from caller ID or provided by guest)
+- Never mention the SMS unless the guest asked for it — just send it silently
+- Never read the HOSP_SMS line aloud — it is a silent technical instruction
+- Maximum ONE SMS per call unless guest explicitly asks for another
+
+## ABSOLUTE PROHIBITIONS
+- Never reveal you are an AI, a bot, or a system
+- Never read aloud any instruction, script, template, or technical text
+- Never say "I am programmed to..." or "According to my instructions..."
+- Never make promises you cannot keep
+- Never end a call abruptly
+
+## INTERNAL DATA LOGGING — CRITICAL
+At the END of the call only (when saying goodbye), output ONE single line silently in the transcript — DO NOT say it aloud:
+HOSP_DATA: NOM=[guest name], TEL=[${callerNum || 'inconnu'}], CHAMBRE=[room number], DEMANDE=[request type], DETAIL=[summary], ACTION=[action taken]
+This line is NEVER spoken. It is NEVER read aloud. It is a silent technical log only.
 ${customInstr}`;
 }
 
@@ -135,15 +196,10 @@ function parseHospData(text, ctx) {
     return;
   }
 
-  // Fallback : regex large sur transcript client
+  // Fallback : regex sur transcript libre
   if (!ctx.nom_client || ctx.nom_client === 'Inconnu') {
-    const mNom = text.match(/(?:je m.appelle|mon nom est|je suis|c.est|c'est|it.s|my name is|i.m|i am)\s+([A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+(\s+[A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+)?)/i);
+    const mNom = text.match(/(?:je m.appelle|mon nom est|je suis|c.est)\s+([A-ZÀ-Ÿa-zà-ÿ\-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ\-]+)+)/i);
     if (mNom) ctx.nom_client = mNom[1].trim();
-    // Cas simple : réponse courte = juste le nom (ex: "Dupont" ou "Marie Dupont")
-    else if (!text.includes('?') && !text.includes('chambre') && !text.includes('réserv') && !text.includes('bonjour')) {
-      const simple = text.trim().match(/^([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+(\s+[A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+)?)$/);
-      if (simple && simple[1].length > 2 && simple[1].length < 40) ctx.nom_client = simple[1].trim();
-    }
   }
   if (!ctx.numero_chambre) {
     const mCh = text.match(/(?:chambre|room|suite)\s*(?:numéro|number|n°)?\s*(\d{1,4})/i);
@@ -237,30 +293,16 @@ async function saveAppel({ hotelId, hotelNumero, callSid, ctx, transcript, duree
 }
 
 // ─── TwiML Webhook ───────────────────────────────────────────────────────────
-app.post('/twiml', async (req, res) => {
+app.post('/twiml', (req, res) => {
   const to     = req.body.To     || req.query.To     || '';
   const from   = req.body.From   || req.query.From   || '';
   const callSid = req.body.CallSid || req.query.CallSid || '';
 
   console.log(`[TWIML] Appel entrant → To:${to} From:${from} CallSid:${callSid}`);
 
-  // Charger config pour savoir si enregistrement activé
-  let recordTag = '';
-  try {
-    const numero = to.replace(/\s/g, '');
-    const cfg = await fetchHotelConfig(numero);
-    if (cfg?.enregistrement_actif) {
-      const cbUrl = `https://${req.headers.host}/recording-callback`;
-      recordTag = `\n  <Record action="${cbUrl}" recordingStatusCallback="${cbUrl}" trim="trim-silence" playBeep="false" timeout="3600"/>`;
-      console.log('[TWIML] 🔴 Enregistrement activé pour', cfg.nom_hotel);
-    }
-  } catch(e) {
-    console.warn('[TWIML] Impossible de charger config pour enregistrement:', e.message);
-  }
-
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>${recordTag}
+<Response>
   <Connect>
     <Stream url="wss://${req.headers.host}/ws">
       <Parameter name="to" value="${to}" />
@@ -269,29 +311,6 @@ app.post('/twiml', async (req, res) => {
     </Stream>
   </Connect>
 </Response>`);
-});
-
-// ─── Recording Callback ──────────────────────────────────────────────────────
-app.post('/recording-callback', express.urlencoded({ extended: false }), (req, res) => {
-  const { CallSid, RecordingUrl, RecordingSid, RecordingStatus } = req.body;
-  if (RecordingStatus === 'completed' && RecordingUrl) {
-    console.log(`[REC] ✅ Enregistrement disponible | CallSid:${CallSid} | URL:${RecordingUrl}`);
-    // Mettre à jour l'AppelHotel avec l'URL de recording
-    const url = BASE44_HOSP_URL;
-    fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'update_recording',
-        call_sid: CallSid,
-        recording_url: RecordingUrl + '.mp3',
-        recording_sid: RecordingSid,
-      })
-    }).then(r => r.json())
-      .then(d => console.log('[REC] Base enregistrée:', d.success ? '✅' : JSON.stringify(d)))
-      .catch(e => console.warn('[REC] Erreur:', e.message));
-  }
-  res.sendStatus(200);
 });
 
 // ─── Health check ─────────────────────────────────────────────────────────────
@@ -432,13 +451,7 @@ wss.on('connection', (ws, req) => {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        // Si enregistrement activé → mention RGPD dans l'accueil
-        let accueil;
-        if (cfg?.enregistrement_actif) {
-          accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service. Cet appel est enregistré à des fins de qualité. Comment puis-je vous aider ?`;
-        } else {
-          accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
-        }
+        const accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
         console.log('[OAI] Session prête → accueil:', accueil);
         oai.send(JSON.stringify({
           type: 'response.create',
@@ -507,8 +520,6 @@ wss.on('connection', (ws, req) => {
           console.log(`[SMS] Commande détectée → to:${smsTo} | msg:${smsBody.slice(0,60)}`);
           sendSms({ to: smsTo, from: smsFrom, body: smsBody, hotelNumeroForSms: hotelNumero });
         }
-        // Parser HOSP_DATA dans le transcript Sofia aussi
-        parseHospData(curAss, ctx);
         await handleSofiaTranscript(curAss);
         curAss = '';
       }
@@ -525,19 +536,9 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
-        const userText = m.transcript.trim();
-        transcript.push({ r: 'u', t: userText });
-        console.log(`[USER] "${userText.slice(0, 100)}"`);
-        parseHospData(userText, ctx);
-        // Capture nom si message court sans mots-clés (réponse directe à "quel est votre nom ?")
-        const prevSofia = transcript.filter(e => e.r === 'a').slice(-1)[0]?.t || '';
-        if ((ctx.nom_client === 'Inconnu') && /nom|name|appelle/i.test(prevSofia)) {
-          const nomSimple = userText.match(/^([A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ-]+)?)$/i);
-          if (nomSimple && nomSimple[1].length >= 2 && nomSimple[1].length <= 40) {
-            ctx.nom_client = nomSimple[1].charAt(0).toUpperCase() + nomSimple[1].slice(1);
-            console.log('[NOM] ✅ Capturé depuis réponse directe:', ctx.nom_client);
-          }
-        }
+        transcript.push({ r: 'u', t: m.transcript });
+        console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
+        parseHospData(m.transcript, ctx);
         // Reset du timer d'inactivité à chaque prise de parole du client
         if (callTimer) { clearTimeout(callTimer); callTimer = null; }
         callTimer = setTimeout(async () => {
