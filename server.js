@@ -423,20 +423,24 @@ wss.on('connection', (ws, req) => {
         session: {
           type: 'realtime',
           instructions,
-          voice: cfg?.voix || 'sage',
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 800,
-            create_response: true,
-            interrupt_response: true
-          },
-          modalities: ['text', 'audio'],
-          temperature: 0.7,
+          audio: {
+            input: {
+              format: { type: 'audio/g711-ulaw' },
+              transcription: { model: 'whisper-1' },
+              turn_detection: {
+                type: 'server_vad',
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 800,
+                create_response: true,
+                interrupt_response: true
+              }
+            },
+            output: {
+              format: { type: 'audio/g711-ulaw' },
+              voice: cfg?.voix || 'sage'
+            }
+          }
         }
       }));
     });
