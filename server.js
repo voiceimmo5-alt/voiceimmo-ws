@@ -425,7 +425,7 @@ wss.on('connection', (ws, req) => {
           instructions,
           audio: {
             input: {
-              format: { type: 'audio/g711-ulaw' },
+              format: { type: 'audio/pcmu' },
               transcription: { model: 'whisper-1' },
               turn_detection: {
                 type: 'server_vad',
@@ -437,7 +437,7 @@ wss.on('connection', (ws, req) => {
               }
             },
             output: {
-              format: { type: 'audio/g711-ulaw' },
+              format: { type: 'audio/pcmu' },
               voice: cfg?.voix || 'sage'
             }
           }
