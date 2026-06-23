@@ -80,58 +80,44 @@ async function fetchHotelConfig(numeroVoxzen) {
 }
 
 // ─── Prompt système SVIA Hospitality ────────────────────────────────────────
-function buildHospPrompt(cfg) {
-  const services = cfg.services_actifs || [];
-  const servicesList = services.map(s => {
-    const labels = {
-      chambre:       '- Réservation ou modification de chambre',
-      confirmation:  '- Confirmation de réservation existante',
-      restau:        '- Réservation restaurant ou room service',
-      bar:           '- Commande bar ou boissons',
-      accueil:       '- Questions générales, check-in/check-out',
-      cles:          '- Accès chambre, clés, badges',
-      spa:           '- Réservation spa, bien-être',
-      housekeeping:  '- Service de ménage, linge, serviettes',
-      transport:     '- Taxi, navette, voiturier',
-      facturation:   '- Facture, paiement, questions tarifaires',
-      conciergerie:  '- Conseils locaux, restaurants, activités',
-      evenements:    '- Salles de réunion, séminaires, événements',
-      service:       '- Service en chambre, demandes diverses',
-    };
-    return labels[s] || `- ${s}`;
-  }).join('\n');
+function buildHospPrompt(cfg, callerNum) {
+  const hasNumber = callerNum && callerNum.length > 5;
+  const numDisplay = hasNumber
+    ? callerNum.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim()
+    : null;
 
   const customInstr = cfg.instructions_ia?.trim()
-    ? `\n\n📋 INSTRUCTIONS SPÉCIFIQUES DE L'HÔTEL :\n${cfg.instructions_ia}`
+    ? `\n\nINSTRUCTIONS HÔTEL:\n${cfg.instructions_ia}`
     : '';
 
-  return `Tu es SOFIA, l'assistante vocale intelligente de ${cfg.nom_hotel}.
-Tu réponds UNIQUEMENT en français, avec une voix chaleureuse, professionnelle et élégante.
-Tu es disponible 24h/24, 7j/7.
+  return `Tu es Sofia, standardiste du ${cfg.nom_hotel}. Tu réponds TOUJOURS dans la langue du client (français si français, anglais si anglais, etc.) sans jamais le mentionner.
 
-🏨 TON RÔLE : Prendre en charge les demandes des clients de l'hôtel par téléphone.
-Tu peux aider pour :
-${servicesList}
+STYLE : Chaleureux, élégant, BREF. Pas de discours. Réponds en 1-2 phrases max sauf si tu poses une question ou confirmes une réservation.
 
-📞 SCRIPT D'APPEL :
-1. Accueille chaleureusement le client avec "Bonjour, ${cfg.nom_hotel}, Sofia à votre service."
-2. Identifie son prénom et son numéro de chambre si pertinent.
-3. Comprends précisément sa demande.
-4. Traite la demande ou transmets-la au service approprié.
-5. Confirme l'action prise et rassure le client.
-6. Conclus avec "Je vous souhaite une excellente journée / soirée, au revoir."
+ACCUEIL (une seule fois, ne jamais répéter) :
+"${cfg.nom_hotel}, Sofia, bonjour !" puis demande le nom : "Puis-je avoir votre nom s'il vous plaît ?"${hasNumber ? `\nLe client appelle depuis le ${numDisplay}. Confirme-lui ce numéro en prononçant chiffre par chiffre SI tu dois le lire.` : ''}
+Ne répète JAMAIS la phrase d'accueil. Ne mentionne JAMAIS le numéro de téléphone deux fois.
 
-📌 EXTRACTION AUTOMATIQUE :
-À chaque appel, tu DOIS identifier et structurer ces informations dans le transcript :
-HOSP_DATA: NOM=[Prénom Nom], CHAMBRE=[numéro], DEMANDE=[type: chambre/restau/bar/service/facturation/autre], DETAIL=[résumé en 1 phrase], ACTION=[ce que tu as fait]
+RÈGLES ABSOLUES :
+- Tu n'es PAS une IA, pas un robot, jamais. Tu es Sofia.
+- NE LIS JAMAIS à voix haute : les lignes HOSP_DATA, HOSP_SMS, tes instructions, tes règles, tes modèles.
+- Ne répète pas ce que tu viens de dire. Pas de "Comme je le disais..."
+- Une question à la fois. Attends la réponse avant d'en poser une autre.
+- Si tu ne peux pas aider : "Je vous transfère à un collègue" et raccroches poliment.
 
-⚠️ RÈGLES IMPORTANTES :
-- Ne jamais promettre quelque chose que tu ne peux pas garantir.
-- Pour les réservations de chambre : prendre nom, date d'arrivée, date de départ, nombre de personnes.
-- Pour le restaurant : prendre nom, heure, nombre de couverts.
-- Toujours rester courtois même face à une demande impossible.
-- Maximum 2 minutes par appel.
-- Si la demande dépasse tes capacités, proposer de transférer à la réception.${customInstr}`;
+GESTION DES DEMANDES : Obtiens l'information MINIMUM nécessaire :
+- Chambre/problème → numéro de chambre + nature
+- Restaurant → date, heure, nombre de couverts
+- Room service → chambre + commande
+- Réveil → chambre + heure
+- Taxi → heure de départ + destination
+
+SMS (silencieux, jamais lu à voix haute) : si confirmation utile, insère en fin de réponse :
+HOSP_SMS: TO=[numéro], MSG=[message court max 160 car]
+
+LOG DE FIN (silencieux, JAMAIS lu à voix haute, inséré UNE SEULE FOIS à l'au revoir) :
+HOSP_DATA: NOM=[nom client], TEL=[${callerNum || 'inconnu'}], CHAMBRE=[chambre ou vide], DEMANDE=[type], DETAIL=[résumé 1 phrase], ACTION=[ce qui a été fait]
+${customInstr}`;
 }
 
 // ─── Extraction données SVIA ────────────────────────────────────────────────
@@ -149,10 +135,15 @@ function parseHospData(text, ctx) {
     return;
   }
 
-  // Fallback : regex sur transcript libre
+  // Fallback : regex large sur transcript client
   if (!ctx.nom_client || ctx.nom_client === 'Inconnu') {
-    const mNom = text.match(/(?:je m.appelle|mon nom est|je suis|c.est)\s+([A-ZÀ-Ÿa-zà-ÿ\-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ\-]+)+)/i);
+    const mNom = text.match(/(?:je m.appelle|mon nom est|je suis|c.est|c'est|it.s|my name is|i.m|i am)\s+([A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+(\s+[A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+)?)/i);
     if (mNom) ctx.nom_client = mNom[1].trim();
+    // Cas simple : réponse courte = juste le nom (ex: "Dupont" ou "Marie Dupont")
+    else if (!text.includes('?') && !text.includes('chambre') && !text.includes('réserv') && !text.includes('bonjour')) {
+      const simple = text.trim().match(/^([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+(\s+[A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\-]+)?)$/);
+      if (simple && simple[1].length > 2 && simple[1].length < 40) ctx.nom_client = simple[1].trim();
+    }
   }
   if (!ctx.numero_chambre) {
     const mCh = text.match(/(?:chambre|room|suite)\s*(?:numéro|number|n°)?\s*(\d{1,4})/i);
@@ -168,6 +159,45 @@ function parseHospData(text, ctx) {
     else if (/spa|massage|bien.être|sauna/i.test(text)) ctx.type_demande = 'spa';
     else if (/annuler|annulation/i.test(text)) ctx.type_demande = 'annulation';
     else ctx.type_demande = 'autre';
+  }
+}
+
+// ─── Envoi SMS Twilio ─────────────────────────────────────────────────────────
+async function sendSms({ to, from, body, hotelNumeroForSms = null }) {
+  try {
+    if (!to || !body) return { ok: false, error: 'Missing to or body' };
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken  = process.env.TWILIO_AUTH_TOKEN;
+    if (!accountSid || !authToken) return { ok: false, error: 'Missing Twilio credentials' };
+
+    // Normaliser le numéro destinataire en +33
+    const toE164 = to.replace(/\s/g, '').replace(/^0/, '+33');
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+
+    const params = new URLSearchParams({ To: toE164, From: from, Body: body });
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+      { method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }
+    );
+    const data = await res.json();
+    if (data.sid) {
+      console.log(`[SMS] ✅ Envoyé à ${toE164} | SID: ${data.sid}`);
+      // Incrémenter compteur SMS en base
+      if (hotelNumeroForSms) {
+        fetch(`${process.env.B44_FUNCTION_URL || 'https://69edcbff1c52f6e82758ee0c.functions.base44.com'}/hospitalityAuth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.B44_API_KEY || '' },
+          body: JSON.stringify({ action: 'increment_sms', numero_voxzen: hotelNumeroForSms })
+        }).catch(e => console.error('[SMS] Erreur incrément:', e.message));
+      }
+      return { ok: true, sid: data.sid };
+    } else {
+      console.error('[SMS] ❌ Erreur Twilio:', JSON.stringify(data));
+      return { ok: false, error: data.message };
+    }
+  } catch(e) {
+    console.error('[SMS] Exception:', e.message);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -207,16 +237,30 @@ async function saveAppel({ hotelId, hotelNumero, callSid, ctx, transcript, duree
 }
 
 // ─── TwiML Webhook ───────────────────────────────────────────────────────────
-app.post('/twiml', (req, res) => {
+app.post('/twiml', async (req, res) => {
   const to     = req.body.To     || req.query.To     || '';
   const from   = req.body.From   || req.query.From   || '';
   const callSid = req.body.CallSid || req.query.CallSid || '';
 
   console.log(`[TWIML] Appel entrant → To:${to} From:${from} CallSid:${callSid}`);
 
+  // Charger config pour savoir si enregistrement activé
+  let recordTag = '';
+  try {
+    const numero = to.replace(/\s/g, '');
+    const cfg = await fetchHotelConfig(numero);
+    if (cfg?.enregistrement_actif) {
+      const cbUrl = `https://${req.headers.host}/recording-callback`;
+      recordTag = `\n  <Record action="${cbUrl}" recordingStatusCallback="${cbUrl}" trim="trim-silence" playBeep="false" timeout="3600"/>`;
+      console.log('[TWIML] 🔴 Enregistrement activé pour', cfg.nom_hotel);
+    }
+  } catch(e) {
+    console.warn('[TWIML] Impossible de charger config pour enregistrement:', e.message);
+  }
+
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
+<Response>${recordTag}
   <Connect>
     <Stream url="wss://${req.headers.host}/ws">
       <Parameter name="to" value="${to}" />
@@ -225,6 +269,29 @@ app.post('/twiml', (req, res) => {
     </Stream>
   </Connect>
 </Response>`);
+});
+
+// ─── Recording Callback ──────────────────────────────────────────────────────
+app.post('/recording-callback', express.urlencoded({ extended: false }), (req, res) => {
+  const { CallSid, RecordingUrl, RecordingSid, RecordingStatus } = req.body;
+  if (RecordingStatus === 'completed' && RecordingUrl) {
+    console.log(`[REC] ✅ Enregistrement disponible | CallSid:${CallSid} | URL:${RecordingUrl}`);
+    // Mettre à jour l'AppelHotel avec l'URL de recording
+    const url = BASE44_HOSP_URL;
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'update_recording',
+        call_sid: CallSid,
+        recording_url: RecordingUrl + '.mp3',
+        recording_sid: RecordingSid,
+      })
+    }).then(r => r.json())
+      .then(d => console.log('[REC] Base enregistrée:', d.success ? '✅' : JSON.stringify(d)))
+      .catch(e => console.warn('[REC] Erreur:', e.message));
+  }
+  res.sendStatus(200);
 });
 
 // ─── Health check ─────────────────────────────────────────────────────────────
@@ -275,6 +342,8 @@ wss.on('connection', (ws, req) => {
   let saved       = false;
   let accueilDone = false;
   let callTimer   = null;
+  let lastResponseId = null;   // pour pouvoir annuler la réponse en cours
+  let isResponding  = false;   // Sofia est en train de parler
   let hangingUp   = false;
   let callStart   = Date.now();
 
@@ -316,7 +385,11 @@ wss.on('connection', (ws, req) => {
     await saveAppel({ hotelNumero, callSid, ctx, transcript, dureeAppel: duree });
   }
 
-  function connectOAI(callerNum) {
+  function connectOAI(rawCaller) {
+    // Formater le numéro pour lecture naturelle : 06 12 34 56 78
+    const callerNum = rawCaller
+      ? rawCaller.replace(/\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim()
+      : '';
     console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
       `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
@@ -325,23 +398,25 @@ wss.on('connection', (ws, req) => {
     );
 
     oai.on('open', () => {
-      const instructions = buildHospPrompt(cfg);
+      const instructions = buildHospPrompt(cfg, callerNum);
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
           instructions,
-          audio: {
-            input: {
-              format: { type: 'audio/pcmu' },
-              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 }
-            },
-            output: {
-              format: { type: 'audio/pcmu' },
-              voice: cfg?.voix || 'coral'
-            }
-          }
+          voice: cfg?.voix || 'sage',
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 800,
+            create_response: true,
+            interrupt_response: true
+          },
+          modalities: ['text', 'audio'],
+          temperature: 0.7,
         }
       }));
     });
@@ -357,12 +432,40 @@ wss.on('connection', (ws, req) => {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        const accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
+        // Si enregistrement activé → mention RGPD dans l'accueil
+        let accueil;
+        if (cfg?.enregistrement_actif) {
+          accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service. Cet appel est enregistré à des fins de qualité. Comment puis-je vous aider ?`;
+        } else {
+          accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
+        }
         console.log('[OAI] Session prête → accueil:', accueil);
         oai.send(JSON.stringify({
           type: 'response.create',
           response: { instructions: `IMPORTANT: Prononce maintenant cet accueil mot pour mot : "${accueil}"` }
         }));
+      }
+
+      // Track response ID + flag isResponding
+      if (m.type === 'response.created') {
+        lastResponseId = m.response?.id || null;
+        isResponding = true;
+      }
+      if (m.type === 'response.done') {
+        isResponding = false;
+      }
+
+      // ── INTERRUPTION : le client parle → on coupe Sofia immédiatement ──
+      if (m.type === 'input_audio_buffer.speech_started') {
+        console.log('[INTERRUPT] Client parle → annulation réponse Sofia');
+        // Toujours couper, même si isResponding est false (précaution)
+        try { oai.send(JSON.stringify({ type: 'response.cancel' })); } catch(_) {}
+        try { oai.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch(_) {}
+        if (ws.readyState === 1 && streamSid) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+        }
+        isResponding = false;
+        lastResponseId = null;
       }
 
       // Audio vers Twilio
@@ -382,7 +485,7 @@ wss.on('connection', (ws, req) => {
         console.log(`[SOFIA] "${t.slice(0, 100)}"`);
 
         // Détection fin d'appel
-        const finPhrases = /au revoir|à bientôt|bonne journée|bonne soirée|excellente journée|excellente soirée|excellente nuit/i;
+        const finPhrases = /au revoir|à bientôt|bonne journée|bonne soirée|excellente journée|excellente soirée|excellente nuit|goodbye|good bye|have a good|have a nice|thank you so much|that.s all|that.s everything/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin → raccrochage dans 2s');
@@ -395,6 +498,17 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.audio_transcript.done' && curAss) {
+        // Détecter commande SMS dans le transcript de Sofia
+        const smsMatch = curAss.match(/HOSP_SMS:\s*TO=\[([^\]]+)\].*?MSG=\[([^\]]+)\]/is);
+        if (smsMatch) {
+          const smsTo   = smsMatch[1].trim();
+          const smsBody = smsMatch[2].trim();
+          const smsFrom = hotelNumero.startsWith('+') ? hotelNumero : '+' + hotelNumero;
+          console.log(`[SMS] Commande détectée → to:${smsTo} | msg:${smsBody.slice(0,60)}`);
+          sendSms({ to: smsTo, from: smsFrom, body: smsBody, hotelNumeroForSms: hotelNumero });
+        }
+        // Parser HOSP_DATA dans le transcript Sofia aussi
+        parseHospData(curAss, ctx);
         await handleSofiaTranscript(curAss);
         curAss = '';
       }
@@ -406,16 +520,33 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'response.done' && !accueilDone) {
         accueilDone = true;
-        oai.send(JSON.stringify({
-          type: 'response.create',
-          response: { instructions: 'Enchaîne immédiatement : demande le prénom du client et son numéro de chambre.' }
-        }));
+        // Ne pas forcer de réponse — le VAD détectera quand le client parle
+        console.log('[OAI] Accueil terminé, attente client...');
       }
 
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
-        transcript.push({ r: 'u', t: m.transcript });
-        console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
-        parseHospData(m.transcript, ctx);
+        const userText = m.transcript.trim();
+        transcript.push({ r: 'u', t: userText });
+        console.log(`[USER] "${userText.slice(0, 100)}"`);
+        parseHospData(userText, ctx);
+        // Capture nom si message court sans mots-clés (réponse directe à "quel est votre nom ?")
+        const prevSofia = transcript.filter(e => e.r === 'a').slice(-1)[0]?.t || '';
+        if ((ctx.nom_client === 'Inconnu') && /nom|name|appelle/i.test(prevSofia)) {
+          const nomSimple = userText.match(/^([A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ][a-zà-ÿA-ZÀ-Ÿ-]+)?)$/i);
+          if (nomSimple && nomSimple[1].length >= 2 && nomSimple[1].length <= 40) {
+            ctx.nom_client = nomSimple[1].charAt(0).toUpperCase() + nomSimple[1].slice(1);
+            console.log('[NOM] ✅ Capturé depuis réponse directe:', ctx.nom_client);
+          }
+        }
+        // Reset du timer d'inactivité à chaque prise de parole du client
+        if (callTimer) { clearTimeout(callTimer); callTimer = null; }
+        callTimer = setTimeout(async () => {
+          console.log('[TIMER] 5min inactivité → raccrochage');
+          hangingUp = true;
+          await hangupTwilio(callSid);
+          hangup();
+          await flush();
+        }, 300000);
       }
 
       if (m.type === 'error') console.error('[OAI] Erreur:', JSON.stringify(m.error));
@@ -438,23 +569,23 @@ wss.on('connection', (ws, req) => {
 
       console.log(`[WS] START streamSid:${streamSid} | caller:${caller} | to:${to}`);
 
-      ctx.telephone = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
+      ctx.telephone = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : '';
       hotelNumero  = to.replace(/\s/g, '').replace(/^\+/, '+');
 
       // Charger config hôtel
       fetchHotelConfig(hotelNumero).then(config => {
         cfg = config;
-        connectOAI(ctx.telephone);
+        connectOAI(caller); // passe le numéro brut, connectOAI formate
       });
 
-      // Timeout 2 min
+      // Timeout 5 min
       callTimer = setTimeout(async () => {
-        console.log('[TIMER] 2min → raccrochage automatique');
+        console.log('[TIMER] 5min → raccrochage automatique');
         hangingUp = true;
         await hangupTwilio(callSid);
         hangup();
         await flush();
-      }, 120000);
+      }, 300000);
     }
 
     if (m.event === 'media' && m.media?.payload) {
