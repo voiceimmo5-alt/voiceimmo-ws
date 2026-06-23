@@ -421,6 +421,7 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'session',
           instructions,
           voice: cfg?.voix || 'sage',
           input_audio_format: 'g711_ulaw',
