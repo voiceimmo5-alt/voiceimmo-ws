@@ -176,7 +176,7 @@ RULES:
 
 ## INTERNAL DATA LOGGING — CRITICAL
 At the END of the call only (when saying goodbye), output ONE single line silently in the transcript — DO NOT say it aloud:
-HOSP_DATA: NOM=[prénom et nom réel du client tel qu'il l'a dit], TEL=[${callerNum || 'inconnu'}], CHAMBRE=[numéro de chambre ou 'vide'], DEMANDE=[chambre/restau/bar/spa/facturation/conciergerie/service/autre], DETAIL=[résumé en 1 phrase], ACTION=[action effectuée]
+HOSP_DATA: NOM=[guest name], TEL=[${callerNum || 'inconnu'}], CHAMBRE=[room number], DEMANDE=[request type], DETAIL=[summary], ACTION=[action taken]
 This line is NEVER spoken. It is NEVER read aloud. It is a silent technical log only.
 ${customInstr}`;
 }
