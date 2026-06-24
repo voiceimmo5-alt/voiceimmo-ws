@@ -78,6 +78,7 @@ const OAI_MODEL          = process.env.OAI_MODEL          || 'gpt-4o-realtime-pr
 // const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
 // const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
 const BASE44_PROXY_URL   = 'https://fr-2758ee0c.base44.app/functions/getClientConfig';
+const BASE44_HOSP_LIST_URL = 'https://fr-2758ee0c.base44.app/functions/hospitalityAuth';
 const BASE44_API_KEY     = process.env.BASE44_API_KEY     || '';
 const BASE44_APP_URL     = 'https://fr-2758ee0c.base44.app/functions';
 
@@ -195,6 +196,40 @@ async function refreshConfigs() {
       if (c.numero_actuel) {
         newConfigs[c.numero_actuel] = mapClientToConfig(c);
       }
+    }
+    // Charger aussi les HotelClients (SVIA Hospitality)
+    try {
+      const hospRes = await fetch(BASE44_HOSP_LIST_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'list_hotels' }),
+        signal: AbortSignal.timeout(8000)
+      });
+      if (hospRes.ok) {
+        const hospData = await hospRes.json();
+        const hotels = hospData.hotels || [];
+        for (const h of hotels) {
+          const num = h.numero_voxzen;
+          if (!num) continue;
+          const key = num.startsWith('+') ? num : `+${num}`;
+          newConfigs[key] = {
+            nom_agence:          h.nom_hotel || 'Grand Hotel',
+            hotel_id:            h.hotel_id || h.id,
+            voix:                h.voix || 'shimmer',
+            site_internet:       h.site_internet || 'https://hospitality.voxzen.io',
+            message_accueil:     `Bonjour, ${h.nom_hotel || 'Grand Hotel'}, je suis Sofia. Puis-je avoir votre prenom et nom ?`,
+            instructions_ia:     h.instructions_ia || null,
+            destinataires_email: Array.isArray(h.destinataires_email) ? h.destinataires_email : [h.email || 'christophe.despretz@gmail.com'],
+            enregistrement_actif: h.enregistrement_actif === true,
+            is_hospitality:      true,
+            langue:              h.langue || 'fr',
+            categorie:           h.categorie || '4 etoiles',
+          };
+        }
+        console.log(`[CFG] ✅ Hotels chargés: ${hotels.length} | ${hotels.map(h=>h.nom_hotel).join(', ')}`);
+      }
+    } catch(he) {
+      console.warn('[CFG] ⚠️ Impossible de charger hotels:', he.message);
     }
     CONFIGS = newConfigs;
     console.log(`[CFG] ✅ Config rechargée depuis Base44 — ${clients.length} client(s): ${Object.keys(newConfigs).join(', ')}`);
@@ -632,7 +667,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1812' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1815' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
