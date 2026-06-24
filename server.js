@@ -297,6 +297,7 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'realtime',
           modalities: ['audio', 'text'],
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
           voice: voix,
@@ -718,4 +719,4 @@ app.post('/twiml-suspended', (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v27-fix-session sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v28-session-type sur port ${PORT}`));
