@@ -123,7 +123,7 @@ const CONFIGS_FALLBACK = {
 // Cache dynamique — mis à jour depuis Base44 toutes les 5 minutes
 let CONFIGS = { ...CONFIGS_FALLBACK };
 
-// ─── Auto-login token store (onboarding Stripe) ──────────────────────────────
+// ─── Auto-login token store (onboarding Stripe) [1782315573] ────────────────────────
 const AUTOLOGIN_TOKENS = new Map(); // token -> { email, nom_agence, expires }
 const AUTOLOGIN_BY_SESSION = new Map(); // session_id -> token
 function storeAutologinToken(token, email, nom_agence, sessionId) {
