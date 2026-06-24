@@ -1073,7 +1073,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement|n'hésitez pas à rappeler|bonne fin de soirée|bonne fin de journée|bonne nuit à vous|excellente soirée|excellent séjour|passez une excellente/i;
+        const finPhrases = /\bau revoir\b|\bà bientôt\b|à très bientôt|\bbonne journée\b|\bbonne soirée\b|\bbonne continuation\b|rappeler très rapidement/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback transcript) → raccrochage 500ms');
