@@ -78,7 +78,6 @@ const OAI_MODEL          = process.env.OAI_MODEL          || 'gpt-4o-realtime-pr
 // const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
 // const GMAIL_FROM         = process.env.GMAIL_FROM         || 'voiceimmo5@gmail.com';
 const BASE44_PROXY_URL   = 'https://fr-2758ee0c.base44.app/functions/getClientConfig';
-const BASE44_HOSP_LIST_URL = 'https://fr-2758ee0c.base44.app/functions/hospitalityAuth';
 const BASE44_API_KEY     = process.env.BASE44_API_KEY     || '';
 const BASE44_APP_URL     = 'https://fr-2758ee0c.base44.app/functions';
 
@@ -120,11 +119,11 @@ const CONFIGS_FALLBACK = {
     destinataires_email: ['christophe.despretz@gmail.com'],
   },
   '+33939249373': {
-    nom_agence:          'Grand Hotel de Lyon',
+    nom_agence:          'SVIA HOSPITALITY',
     hotel_id:            'HOSP-DEMO',
     voix:                'shimmer',
     site_internet:       'https://hospitality.voxzen.io',
-    message_accueil:     'Bonjour, Grand Hotel de Lyon, je suis Sofia. Puis-je avoir votre prenom et nom ?',
+    message_accueil:     "Bonjour, SVIA Hospitality, je suis Sofia. Puis-je avoir votre prénom et nom, s'il vous plaît ?",
     instructions_ia:     null,
     destinataires_email: ['christophe.despretz@gmail.com'],
     enregistrement_actif: true,
@@ -175,7 +174,6 @@ function mapClientToConfig(c) {
     agents_arr,
     destinataires_email:  dest,
     enregistrement_actif: c.enregistrement_actif === true,
-    is_hospitality:       c.secteur === 'hospitality' || c.is_hospitality === true || false,
   };
 }
 
@@ -196,40 +194,6 @@ async function refreshConfigs() {
       if (c.numero_actuel) {
         newConfigs[c.numero_actuel] = mapClientToConfig(c);
       }
-    }
-    // Charger aussi les HotelClients (SVIA Hospitality)
-    try {
-      const hospRes = await fetch(BASE44_HOSP_LIST_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'list_hotels' }),
-        signal: AbortSignal.timeout(8000)
-      });
-      if (hospRes.ok) {
-        const hospData = await hospRes.json();
-        const hotels = hospData.hotels || [];
-        for (const h of hotels) {
-          const num = h.numero_voxzen;
-          if (!num) continue;
-          const key = num.startsWith('+') ? num : `+${num}`;
-          newConfigs[key] = {
-            nom_agence:          h.nom_hotel || 'Grand Hotel',
-            hotel_id:            h.hotel_id || h.id,
-            voix:                h.voix || 'shimmer',
-            site_internet:       h.site_internet || 'https://hospitality.voxzen.io',
-            message_accueil:     `Bonjour, ${h.nom_hotel || 'Grand Hotel'}, je suis Sofia. Puis-je avoir votre prenom et nom ?`,
-            instructions_ia:     h.instructions_ia || null,
-            destinataires_email: Array.isArray(h.destinataires_email) ? h.destinataires_email : [h.email || 'christophe.despretz@gmail.com'],
-            enregistrement_actif: h.enregistrement_actif === true,
-            is_hospitality:      true,
-            langue:              h.langue || 'fr',
-            categorie:           h.categorie || '4 etoiles',
-          };
-        }
-        console.log(`[CFG] ✅ Hotels chargés: ${hotels.length} | ${hotels.map(h=>h.nom_hotel).join(', ')}`);
-      }
-    } catch(he) {
-      console.warn('[CFG] ⚠️ Impossible de charger hotels:', he.message);
     }
     CONFIGS = newConfigs;
     console.log(`[CFG] ✅ Config rechargée depuis Base44 — ${clients.length} client(s): ${Object.keys(newConfigs).join(', ')}`);
@@ -355,7 +319,7 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
         + '</table>'
         + recHtml
         + '<div style="margin-top:24px;text-align:center">'
-        + '<a href="' + (process.env.WS_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app') + '/mark-lead-done?id=' + (lead.id||'') + '" '
+        + '<a href="' + (process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr') + '/mark-lead-done?id=' + (lead.id||'') + '" '
         + 'style="display:inline-block;background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:12px 32px;border-radius:10px;font-weight:700;font-size:15px">&#9989; Marquer comme Trait&eacute;</a>'
         + '</div>'
         + '</div></div>';
@@ -667,7 +631,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1820' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260622.0722' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -718,7 +682,7 @@ app.post('/twiml', (req, res) => {
   const to     = req.body.To     || req.body.Called || '';
   const sid    = req.body.CallSid|| '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
-  const baseUrl = process.env.SERVER_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app';
+  const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
 
   // Enregistrement : on passe l'info via paramètre au WebSocket
   // L'enregistrement sera déclenché via API REST Twilio après établissement du stream
@@ -731,7 +695,7 @@ app.post('/twiml', (req, res) => {
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://${baseUrl.replace('https://','').replace('http://','')}">
+    <Stream url="wss://ws-staging.voiceimmo.fr">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
@@ -754,9 +718,12 @@ function getRecordingMention(voix) {
 
 function injectRecordingMention(messageAccueil, voix) {
   const mention = getRecordingMention(voix);
-  // Ajouter la mention APRÈS l'accueil complet — ne jamais couper la phrase d'accueil
-  const accueilNettoye = messageAccueil.trimEnd().replace(/[.,!?]+$/, '');
-  return accueilNettoye + '. ' + mention.trim();
+  // Insérer la mention après la première phrase (après le premier point ou virgule)
+  const match = messageAccueil.match(/^([^.!?]+[.!?]\s*)/);
+  if (match) {
+    return match[0] + mention + messageAccueil.slice(match[0].length);
+  }
+  return messageAccueil + ' ' + mention;
 }
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
@@ -891,41 +858,6 @@ wss.on('connection', (ws, req) => {
   // ─── Sauvegarde lead en base ────────────────────────────────────────────────
   async function saveLead(leadData, cfgData) {
     try {
-      const isHospitality = cfgData?.is_hospitality === true;
-      if (isHospitality) {
-        // ─── Hospitality : sauvegarder dans AppelHotel ─────────────────────
-        const hospPayload = {
-          hotel_id:        cfgData?.client_db_id || cfgData?.hotel_id || 'HOSP-DEMO',
-          call_sid:        leadData.callSid || '',
-          type_demande:    leadData.type_demande || 'autre',
-          nom_client:      leadData.nom      || 'Inconnu',
-          telephone:       leadData.tel      || 'Inconnu',
-          numero_chambre:  leadData.numero_chambre || '',
-          demande:         leadData.demande  || '',
-          resume_ia:       leadData.demande  || '',
-          statut:          'Nouveau',
-          email_envoye:    true,
-          notes:           leadData.transcript && leadData.transcript.length
-            ? leadData.transcript.map(e =>
-                (e.r === 'a' ? 'Sofia: ' : 'Client: ') + e.t
-              ).join('\n')
-            : '',
-        };
-        const resH = await fetch(`${BASE44_APP_URL}/saveAppelHotel`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify(hospPayload),
-          signal:  AbortSignal.timeout(15000)
-        });
-        const dataH = await resH.json();
-        if (dataH.ok) {
-          console.log('[HOSP] ✅ AppelHotel sauvegardé, id:', dataH.id);
-        } else {
-          console.warn('[HOSP] ⚠️ Erreur saveAppelHotel:', JSON.stringify(dataH));
-        }
-        return;
-      }
-      // ─── VoiceImmo : sauvegarder dans Lead (comportement existant) ─────────
       const payload = {
         nom:              leadData.nom      || 'Inconnu',
         telephone:        leadData.tel      || 'Inconnu',
@@ -1030,12 +962,19 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG(), callerNum),
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          voice: cfg?.voix || 'coral',
-          input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+          audio: {
+            input: {
+              format: { type: 'audio/pcmu' },
+              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+            },
+            output: {
+              format: { type: 'audio/pcmu' },
+              voice: cfg?.voix || 'coral'
+            }
+          }
         }
       }));
     });
@@ -1046,9 +985,7 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        const nomAgAccueil = cfg?.nom_agence || 'Grand Hôtel';
-  const accueilDefault = `Bonjour, ${nomAgAccueil}, je suis Sofia. Puis-je avoir votre prénom et nom, s'il vous plaît ?`;
-  let accueil = cfg?.message_accueil || (cfg?.is_hospitality ? accueilDefault : DEF_CFG().message_accueil);
+        let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
         // Injecter la mention RGPD si enregistrement actif
         if (cfg?.enregistrement_actif) {
           accueil = injectRecordingMention(accueil, cfg?.voix);
@@ -1060,7 +997,7 @@ wss.on('connection', (ws, req) => {
         queue = [];
         oai.send(JSON.stringify({
           type: 'response.create',
-          response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
+          response: { instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"` }
         }));
       }
 
@@ -1074,7 +1011,7 @@ wss.on('connection', (ws, req) => {
         curAss += m.delta;
         // Détection phrase de fin EN STREAMING → coupe immédiatement, pas de récap
         if (!hangingUp) {
-          const finPhrasesDelta = /au revoir/i;
+          const finPhrasesDelta = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|goodbye|good night|bonne nuit|rappeler très rapidement|n'hésitez pas à rappeler|bonne fin de soirée|bonne fin de journée|bonne nuit à vous|excellente soirée|excellent séjour|passez une excellente/i;
           if (finPhrasesDelta.test(curAss)) {
             hangingUp = true;
             console.log('[FIN-DELTA] ✅ Phrase de fin détectée en streaming → annulation immédiate');
@@ -1101,7 +1038,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /au revoir/i;
+        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement|n'hésitez pas à rappeler|bonne fin de soirée|bonne fin de journée|bonne nuit à vous|excellente soirée|excellent séjour|passez une excellente/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback transcript) → raccrochage 500ms');
@@ -1250,7 +1187,7 @@ wss.on('connection', (ws, req) => {
         setTimeout(async () => {
           try {
             const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-            const baseUrl = process.env.SERVER_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app';
+            const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
             const recResp = await fetch(
               `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}/Recordings.json`,
               {
@@ -1342,7 +1279,7 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
   if (RecordingStatus !== 'completed' || !RecordingUrl || !CallSid) return;
 
   // URL proxy via notre backend (évite la popup d'auth Twilio dans le navigateur)
-  const mp3Url = `${process.env.WS_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app'}/recording/${RecordingSid}`;
+  const mp3Url = `${process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr'}/recording/${RecordingSid}`;
   console.log(`[REC] ✅ Enregistrement prêt: ${mp3Url}`);
 
   // Mettre à jour le Lead correspondant dans Base44
