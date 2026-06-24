@@ -662,12 +662,9 @@ function getRecordingMention(voix) {
 
 function injectRecordingMention(messageAccueil, voix) {
   const mention = getRecordingMention(voix);
-  // Insérer la mention après la première phrase (après le premier point ou virgule)
-  const match = messageAccueil.match(/^([^.!?]+[.!?]\s*)/);
-  if (match) {
-    return match[0] + mention + messageAccueil.slice(match[0].length);
-  }
-  return messageAccueil + ' ' + mention;
+  // Ajouter la mention APRÈS l'accueil complet — ne jamais couper la phrase d'accueil
+  const accueilNettoye = messageAccueil.trimEnd().replace(/[.,!?]+$/, '');
+  return accueilNettoye + '. ' + mention.trim();
 }
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
@@ -903,7 +900,7 @@ wss.on('connection', (ws, req) => {
         queue = [];
         oai.send(JSON.stringify({
           type: 'response.create',
-          response: { instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"` }
+          response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
         }));
       }
 
