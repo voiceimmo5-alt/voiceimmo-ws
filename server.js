@@ -632,7 +632,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1757' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1806' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -1046,7 +1046,7 @@ wss.on('connection', (ws, req) => {
         curAss += m.delta;
         // Détection phrase de fin EN STREAMING → coupe immédiatement, pas de récap
         if (!hangingUp) {
-          const finPhrasesDelta = /\bau revoir\b|\bà bientôt\b|à très bientôt\b|\bbonne journée\b|\bbonne soirée\b|\bbonne continuation\b|\bgoodbye\b|\bgood night\b|\bbonne nuit\b|rappeler très rapidement|n'hésitez pas à rappeler|\bbonne fin de soirée\b|\bbonne fin de journée\b|\bbonne nuit à vous\b|\bexcellente soirée\b|\bexcellent séjour\b|passez une excellente/i;
+          const finPhrasesDelta = /au revoir/i;
           if (finPhrasesDelta.test(curAss)) {
             hangingUp = true;
             console.log('[FIN-DELTA] ✅ Phrase de fin détectée en streaming → annulation immédiate');
@@ -1073,7 +1073,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /\bau revoir\b|\bà bientôt\b|à très bientôt|\bbonne journée\b|\bbonne soirée\b|\bbonne continuation\b|rappeler très rapidement/i;
+        const finPhrases = /au revoir/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback transcript) → raccrochage 500ms');
