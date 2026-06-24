@@ -123,7 +123,7 @@ const CONFIGS_FALLBACK = {
     hotel_id:            'HOSP-DEMO',
     voix:                'shimmer',
     site_internet:       'https://hospitality.voxzen.io',
-    message_accueil:     "Bonjour, hôtel SVIA, je suis Sofia votre assistante vocale. Comment puis-je vous aider ?",
+    message_accueil:     "Bonjour, SVIA Hospitality, je suis Sofia. Puis-je avoir votre prénom et nom, s'il vous plaît ?",
     instructions_ia:     null,
     destinataires_email: ['christophe.despretz@gmail.com'],
     enregistrement_actif: true,
@@ -1064,14 +1064,18 @@ wss.on('connection', (ws, req) => {
         if (!curAss) curAss = ''; // reset si déjà capturé
       }
 
-      // Après le message d'accueil → Sophie enchaîne directement sur l'étape 1
+      // Après accueil : Sofia a déjà demandé le nom, Sophie enchaîne sur étape 1
       if (m.type === 'response.done' && !accueilDone) {
         accueilDone = true;
-        console.log('[OAI] Accueil terminé → lancement étape 1 (demande de nom)');
-        oai.send(JSON.stringify({
-          type: 'response.create',
-          response: { instructions: 'Enchaîne IMMÉDIATEMENT sur la première étape du script : demande le prénom et le nom de l\'appelant.' }
-        }));
+        if (!cfg?.is_hospitality) {
+          console.log('[OAI] Accueil terminé → lancement étape 1 (demande de nom)');
+          oai.send(JSON.stringify({
+            type: 'response.create',
+            response: { instructions: 'Enchaîne IMMÉDIATEMENT sur la première étape du script : demande le prénom et le nom de l\'appelant.' }
+          }));
+        } else {
+          console.log('[OAI] Accueil Sofia terminé → attente réponse du client');
+        }
       }
 
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
@@ -1163,7 +1167,9 @@ wss.on('connection', (ws, req) => {
       callSid      = params.sid    || params.CallSid || m.start?.callSid || '';
       const caller = params.caller || params.From || m.start?.from || '';
       const to     = params.to     || params.To   || m.start?.to   || '';
-      const doRecord = params.record === 'true';
+      // doRecord = paramètre TwiML OU config enregistrement_actif (Hospitality)
+      const cfgForRecord = getConfig(params.to || params.To || '');
+      const doRecord = params.record === 'true' || cfgForRecord?.enregistrement_actif === true;
       console.log(`[WS] START streamSid:${streamSid} caller=${caller} to=${to} record=${doRecord}`);
       lead.tel = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
       cfg = getConfig(to || '');
