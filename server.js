@@ -119,11 +119,11 @@ const CONFIGS_FALLBACK = {
     destinataires_email: ['christophe.despretz@gmail.com'],
   },
   '+33939249373': {
-    nom_agence:          'SVIA HOSPITALITY',
+    nom_agence:          'Grand Hotel de Lyon',
     hotel_id:            'HOSP-DEMO',
     voix:                'shimmer',
     site_internet:       'https://hospitality.voxzen.io',
-    message_accueil:     null,
+    message_accueil:     'Bonjour, Grand Hotel de Lyon, je suis Sofia. Puis-je avoir votre prenom et nom ?',
     instructions_ia:     null,
     destinataires_email: ['christophe.despretz@gmail.com'],
     enregistrement_actif: true,
@@ -632,7 +632,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1806' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1812' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
