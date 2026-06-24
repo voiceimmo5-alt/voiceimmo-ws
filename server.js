@@ -297,18 +297,12 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
+          modalities: ['audio', 'text'],
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
-          audio: {
-            input: {
-              format: { type: 'audio/pcmu' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
-            },
-            output: {
-              format: { type: 'audio/pcmu' },
-              voice: voix
-            }
-          }
+          voice: voix,
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
         }
       }));
     });
@@ -724,4 +718,4 @@ app.post('/twiml-suspended', (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v26-ga-api-1782326697 sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v27-fix-session sur port ${PORT}`));
