@@ -913,7 +913,27 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.audio_transcript.delta' && m.delta) {
+        curAss += m.delta;
+        // Détection phrase de fin EN STREAMING → coupe immédiatement, pas de récap
+        if (!hangingUp) {
+          const finPhrasesDelta = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|goodbye|good night|bonne nuit|rappeler très rapidement/i;
+          if (finPhrasesDelta.test(curAss)) {
+            hangingUp = true;
+            console.log('[FIN-DELTA] ✅ Phrase de fin détectée en streaming → annulation immédiate');
+            // 1. Annuler la génération OpenAI → stoppe tout audio supplémentaire
+            try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.cancel'})); } catch(e){}
+            // 2. Vider le buffer audio Twilio
+            try { if (ws.readyState === 1) ws.send(JSON.stringify({event:'clear', streamSid})); } catch(e){}
+            // 3. Raccrocher après 800ms (laisser la dernière phrase partir)
+            setTimeout(async () => {
+              await hangupTwilio(callSid);
+              hangup();
+              await flush();
+            }, 800);
+          }
+        }
+      }
 
       // Détection phrase de fin + sauvegarde transcript Sophie
       async function handleSophieTranscript(text) {
@@ -927,15 +947,14 @@ wss.on('connection', (ws, req) => {
         const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
+          console.log('[FIN] ✅ Phrase de fin détectée (fallback transcript) → raccrochage 500ms');
+          try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.cancel'})); } catch(e){}
+          try { if (ws.readyState === 1) ws.send(JSON.stringify({event:'clear', streamSid})); } catch(e){}
           setTimeout(async () => {
-            // 1. API REST Twilio EN PREMIER → raccroche le téléphone physiquement
             await hangupTwilio(callSid);
-            // 2. Fermer les connexions WebSocket
             hangup();
-            // 3. Sauvegarder le lead + envoyer email
             await flush();
-          }, 2000);
+          }, 500);
         }
       }
 
