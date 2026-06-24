@@ -284,9 +284,9 @@ wss.on('connection', (ws, req) => {
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
       ['realtime'],
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`,  } }
     );
 
     oai.on('open', () => {
@@ -297,15 +297,18 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          modalities: ['text', 'audio'],
+          type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG, callerNum),
-          voice: voix,
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1', language: 'fr' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
-          temperature: 0.7,
-          max_response_output_tokens: 200,
+          audio: {
+            input: {
+              format: { type: 'audio/pcmu' },
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+            },
+            output: {
+              format: { type: 'audio/pcmu' },
+              voice: voix
+            }
+          }
         }
       }));
     });
