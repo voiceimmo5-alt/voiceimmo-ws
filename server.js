@@ -575,7 +575,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1757' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1806' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -1084,7 +1084,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /\bau revoir\b|\bà bientôt\b|à très bientôt|\bbonne journée\b|\bbonne soirée\b|\bbonne continuation\b|rappeler très rapidement/i;
+        const finPhrases = /au revoir/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
@@ -1482,7 +1482,7 @@ hospWss.on('connection', (ws, req) => {
         if (transcript.some(e => e.r === 'a' && e.t === t)) return;
         transcript.push({ r: 'a', t });
         console.log(`[SOFIA-HOSP] "${t.slice(0,100)}"`);
-        const finPhrases = /au revoir|bonne journée|bonne soirée|excellente journée|excellente soirée|excellente nuit/i;
+        const finPhrases = /au revoir/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[HOSP-FIN] ✅ Phrase de fin → raccrochage dans 2s');
