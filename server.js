@@ -913,7 +913,27 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.audio_transcript.delta' && m.delta) {
+        curAss += m.delta;
+        // Détection phrase de fin EN STREAMING (sur les deltas) → on coupe dès que la phrase apparaît
+        if (!hangingUp) {
+          const finPhrasesDelta = /bonne journée|bonne soirée|bonne continuation|au revoir|à bientôt|à très bientôt/i;
+          if (finPhrasesDelta.test(curAss)) {
+            hangingUp = true;
+            console.log('[FIN-DELTA] ✅ Phrase de fin détectée en streaming → annulation immédiate');
+            // 1. Annuler immédiatement la génération OpenAI → stoppe l'audio
+            try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.cancel'})); } catch(e){}
+            // 2. Vider le buffer audio Twilio
+            try { if (ws.readyState === 1) ws.send(JSON.stringify({event:'clear', streamSid})); } catch(e){}
+            // 3. Raccrocher après 800ms (laisser le dernier mot partir)
+            setTimeout(async () => {
+              await hangupTwilio(callSid);
+              hangup();
+              await flush();
+            }, 800);
+          }
+        }
+      }
 
       // Détection phrase de fin + sauvegarde transcript Sophie
       async function handleSophieTranscript(text) {
