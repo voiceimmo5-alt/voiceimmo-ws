@@ -1015,7 +1015,7 @@ wss.on('connection', (ws, req) => {
       const mSuis = text.match(/je suis\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]+\s+[A-ZÀ-Ÿ][a-zà-ÿ\-]+)/i);
       // Pattern générique : 2 mots consécutifs Prénom Nom (majuscule + minuscules, min 3 chars chacun)
       // Exclure les faux positifs communs
-      const EXCLUS_NOM = /^(Bonjour|Merci|Bonne|Journée|Oui|Non|Voilà|Excusez|Désolé|Voici|Allô|Sophie|Madame|Monsieur|Mademoiselle|Bien|Très|Super|Parfait|Accord|Revoir|Bientôt|Pour|Avoir|Faire|Aller|Venir|Prendre|Donner|Trouver|Chercher|Appeler|Vouloir|Pouvoir)$/i;
+      const EXCLUS_NOM = /^(Bonjour|Bonsoir|Merci|Bonne|Journée|Soirée|Continuation|Oui|Non|Voilà|Excusez|Désolé|Voici|Allô|Allo|Sophie|Sofia|Madame|Monsieur|Mademoiselle|Bien|Très|Super|Parfait|Accord|Revoir|Bientôt|Pour|Avoir|Faire|Aller|Venir|Prendre|Donner|Trouver|Chercher|Appeler|Vouloir|Pouvoir|Tout|Bon|Bien|Oui|Non|Ok|Okay|Voilà|Voila|Exactement|Effectivement|Absolument|Certainement|Évidemment|Evidemment|Correct|Parfait|Entendu|Compris|Aussi|Même|Encore|Toujours|Déjà|Jamais|Rien|Quelque|Chose|Autre|Celle|Celui|Ceux|Celles|Cette|Avec|Sans|Dans|Sur|Sous|Vers|Chez|Entre|Depuis|Pendant|Avant|Après|Merci|Bonne|Nuit|Jour|Soir|Matin|Demain|Hier|Aujourd|Chambre|Hôtel|Hotel|Service|Restaurant|Bar|Piscine|Spa|Réception|Reception|Annulation|Réservation|Reservation|Voxzen|Voiceimmo)$/i;
       const mDirect = text.match(/^\s*([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,})(?:\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,}))+\s*[,\.!]?\s*$/m);
 
       if (mApp)  lead.nom = mApp[1].trim();
