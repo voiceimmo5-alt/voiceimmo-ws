@@ -319,7 +319,7 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
         + '</table>'
         + recHtml
         + '<div style="margin-top:24px;text-align:center">'
-        + '<a href="' + (process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr') + '/mark-lead-done?id=' + (lead.id||'') + '" '
+        + '<a href="' + (process.env.WS_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app') + '/mark-lead-done?id=' + (lead.id||'') + '" '
         + 'style="display:inline-block;background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:12px 32px;border-radius:10px;font-weight:700;font-size:15px">&#9989; Marquer comme Trait&eacute;</a>'
         + '</div>'
         + '</div></div>';
@@ -631,7 +631,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1710' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1717' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -682,7 +682,7 @@ app.post('/twiml', (req, res) => {
   const to     = req.body.To     || req.body.Called || '';
   const sid    = req.body.CallSid|| '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
-  const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
+  const baseUrl = process.env.SERVER_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app';
 
   // Enregistrement : on passe l'info via paramètre au WebSocket
   // L'enregistrement sera déclenché via API REST Twilio après établissement du stream
@@ -695,7 +695,7 @@ app.post('/twiml', (req, res) => {
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://ws-staging.voiceimmo.fr">
+    <Stream url="wss://${baseUrl.replace('https://','').replace('http://','')}">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
@@ -1187,7 +1187,7 @@ wss.on('connection', (ws, req) => {
         setTimeout(async () => {
           try {
             const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-            const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
+            const baseUrl = process.env.SERVER_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app';
             const recResp = await fetch(
               `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}/Recordings.json`,
               {
@@ -1279,7 +1279,7 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
   if (RecordingStatus !== 'completed' || !RecordingUrl || !CallSid) return;
 
   // URL proxy via notre backend (évite la popup d'auth Twilio dans le navigateur)
-  const mp3Url = `${process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr'}/recording/${RecordingSid}`;
+  const mp3Url = `${process.env.WS_BASE_URL || 'https://voiceimmo-ws-production-ebd2.up.railway.app'}/recording/${RecordingSid}`;
   console.log(`[REC] ✅ Enregistrement prêt: ${mp3Url}`);
 
   // Mettre à jour le Lead correspondant dans Base44
