@@ -117,6 +117,17 @@ const CONFIGS_FALLBACK = {
       { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',   zones: 'villefontaine, nord rhone, beaujolais' }
     ],
     destinataires_email: ['christophe.despretz@gmail.com'],
+  },
+  '+33939249373': {
+    nom_agence:          'SVIA HOSPITALITY',
+    hotel_id:            'HOSP-DEMO',
+    voix:                'shimmer',
+    site_internet:       'https://hospitality.voxzen.io',
+    message_accueil:     "Bonjour, hôtel SVIA, je suis Sofia votre assistante vocale. Comment puis-je vous aider ?",
+    instructions_ia:     null,
+    destinataires_email: ['christophe.despretz@gmail.com'],
+    enregistrement_actif: true,
+    is_hospitality:      true,
   }
 };
 
@@ -724,6 +735,7 @@ wss.on('connection', (ws, req) => {
   let streamSid  = '';
   let callSid    = '';
   let oai        = null;
+  let silenceTimer = null;
   let ready      = false;
   let queue      = [];
   let transcript = [];
@@ -758,6 +770,7 @@ wss.on('connection', (ws, req) => {
 
   function hangup() {
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
     if (oai && oai.readyState === WebSocket.OPEN) oai.close();
     // Fermer aussi le WebSocket Twilio Media Stream pour libérer la connexion
     try { if (ws.readyState === ws.OPEN) ws.close(); } catch(_) {}
@@ -920,7 +933,7 @@ wss.on('connection', (ws, req) => {
         curAss += m.delta;
         // Détection phrase de fin EN STREAMING → coupe immédiatement, pas de récap
         if (!hangingUp) {
-          const finPhrasesDelta = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|goodbye|good night|bonne nuit|rappeler très rapidement/i;
+          const finPhrasesDelta = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|goodbye|good night|bonne nuit|rappeler très rapidement|n'hésitez pas à rappeler|bonne fin de soirée|bonne fin de journée|bonne nuit à vous|excellente soirée|excellent séjour|passez une excellente/i;
           if (finPhrasesDelta.test(curAss)) {
             hangingUp = true;
             console.log('[FIN-DELTA] ✅ Phrase de fin détectée en streaming → annulation immédiate');
@@ -947,7 +960,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
+        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement|n'hésitez pas à rappeler|bonne fin de soirée|bonne fin de journée|bonne nuit à vous|excellente soirée|excellent séjour|passez une excellente/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback transcript) → raccrochage 500ms');
@@ -1097,6 +1110,22 @@ wss.on('connection', (ws, req) => {
       }
     }
     else if (m.event === 'media' && m.media?.payload) {
+      // Réinitialiser le timer de silence à chaque paquet audio reçu
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+      if (!hangingUp && ready) {
+        silenceTimer = setTimeout(async () => {
+          if (!hangingUp) {
+            hangingUp = true;
+            console.log('[SILENCE] 10s sans audio → raccrochage automatique');
+            try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.create', response:{instructions:'Dis exactement : "Je ne vous entends plus, je raccroche. N\'hésitez pas à rappeler. Au revoir !"'}})); } catch(e){}
+            setTimeout(async () => {
+              await hangupTwilio(callSid);
+              hangup();
+              await flush();
+            }, 2500);
+          }
+        }, 10000);
+      }
       if (oai && oai.readyState === WebSocket.OPEN && ready) {
         oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
       } else if (oai) {
