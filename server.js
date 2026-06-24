@@ -683,6 +683,8 @@ function buildPrompt(c, callerNum) {
       prompt = mention + prompt;
     }
     // Toujours injecter le bloc de collecte structurée
+    prompt += `\n\n## COMMUNICATION DIFFICILE (OBLIGATOIRE)\nSi tu n'entends pas bien l'appelant, si le son est coupé ou la réponse incompréhensible, ne devine pas. Dis naturellement : "Je suis désolé(e), je vous entends mal. Pourriez-vous vous rapprocher du micro ou parler un peu plus fort ?" Si après deux tentatives le problème persiste, dis : "Je suis désolé(e), la communication semble difficile. N'hésitez pas à nous rappeler. Au revoir !" puis raccroche.`;
+    // Toujours injecter le bloc de collecte structurée
     prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
@@ -695,6 +697,7 @@ function buildPrompt(c, callerNum) {
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
+- Si tu n'entends pas bien l'appelant, dis : "Je suis désolée, je vous entends mal. Pourriez-vous vous rapprocher du micro ou parler un peu plus fort ?" — si le problème persiste après deux essais, invite à rappeler et raccroche.
 - Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
 - Tu ne donnes pas de conseils juridiques ou financiers
 - Tu collectes les informations dans cet ordre :
