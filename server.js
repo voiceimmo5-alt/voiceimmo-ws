@@ -251,39 +251,85 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
     return false;
   }
   try {
-    const agentTrouve = (cfg.agents || []).find(a =>
-      (lead.agent_initiales||'').toLowerCase().split('/').map(s=>s.trim()).some(ini => a.nom.split(' ')[0].toLowerCase() === ini) ||
-      (lead.ville||'').toLowerCase().split(' ').some(v => a.zones.toLowerCase().includes(v))
-    );
-    const destAgent = agentTrouve ? agentTrouve.email : null;
-    const destList = [...new Set([...(cfg.destinataires_email||[]), destAgent, 'voiceimmo5@gmail.com'].filter(Boolean))];
-    const agentLabel = agentTrouve ? agentTrouve.nom : (lead.agent_initiales || 'N/A');
-    const html = '<div style="font-family:sans-serif;max-width:600px;margin:0 auto">'
-      + '<div style="background:#4f46e5;color:#fff;padding:24px;border-radius:12px 12px 0 0">'
-      + '<h2 style="margin:0">&#127968; Nouveau lead &mdash; ' + (cfg.nom_agence||'VoiceImmo') + '</h2>'
-      + '</div>'
-      + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
-      + '<table style="width:100%;border-collapse:collapse">'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Nom</td><td style="padding:8px">' + (lead.nom||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:' + (lead.telephone||'').replace(/\s/g,'') + '" style="color:#4f46e5;font-weight:700;text-decoration:none;font-size:16px">' + (lead.telephone||'N/A') + '</a></td></tr>'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Besoin</td><td style="padding:8px">' + (lead.besoin||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Ville</td><td style="padding:8px">' + (lead.ville||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Prix</td><td style="padding:8px">' + (lead.prix||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
-      + '</table>'
-      + (recordingUrl ? '<p style="margin-top:20px;color:#6b7280;font-size:13px">&#127897; Enregistrement de l\'appel en pi&egrave;ce jointe.</p>' : '')
-      + '<div style="margin-top:24px;text-align:center">'
-      + '<a href="' + (process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr') + '/mark-lead-done?id=' + (lead.id||'') + '" '
-      + 'style="display:inline-block;background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:12px 32px;border-radius:10px;font-weight:700;font-size:15px">&#9989; Marquer comme Trait&eacute;</a>'
-      + '</div>'
-      + '</div></div>';
+    const destList = [...new Set([...(cfg.destinataires_email||[]), 'voiceimmo5@gmail.com'].filter(Boolean))];
+
+    // Bouton écouter l'enregistrement (commun aux deux templates)
+    const recHtml = recordingUrl
+      ? '<div style="margin:20px 0;padding:16px;background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;text-align:center">'
+        + '<p style="margin:0 0 10px;font-weight:700;color:#92400e;font-size:15px">&#127897; Enregistrement disponible</p>'
+        + '<a href="' + recordingUrl + '" style="display:inline-block;background:#f59e0b;color:#fff;text-decoration:none;padding:11px 28px;border-radius:8px;font-weight:700;font-size:14px">&#9654; Ecouter</a>'
+        + '</div>'
+      : '';
+
+    let html, subject;
+
+    if (cfg.is_hospitality) {
+      // ── Template SOFIA — Hospitality ──
+      const transcriptHtml = transcript && transcript.length
+        ? '<div style="margin-top:20px"><p style="font-weight:700;color:#374151;margin-bottom:6px">&#128172; Transcription :</p>'
+          + '<div style="background:#f9fafb;border-radius:8px;padding:12px;font-size:13px;line-height:1.9;border:1px solid #e5e7eb">'
+          + transcript.map(e => e.r === 'a'
+            ? '<span style="color:#d97706;font-weight:700">Sofia :</span> ' + e.t
+            : '<span style="color:#4b5563;font-weight:700">Client :</span> ' + e.t
+          ).join('<br>')
+          + '</div></div>'
+        : '';
+      subject = '[' + (cfg.nom_agence||'SVIA') + '] ' + (lead.type_demande||'Appel').toUpperCase() + ' — ' + (lead.nom||'Client');
+      html = '<div style="font-family:sans-serif;max-width:600px;margin:0 auto">'
+        + '<div style="background:linear-gradient(135deg,#1a1a2e,#b8860b);color:#fff;padding:24px;border-radius:12px 12px 0 0">'
+        + '<h2 style="margin:0">&#127970; Voxzen Hospitality</h2>'
+        + '<p style="margin:4px 0 0;opacity:0.85;font-size:14px">' + (cfg.nom_agence||'SVIA') + '</p>'
+        + '</div>'
+        + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
+        + '<table style="width:100%;border-collapse:collapse">'
+        + '<tr><td style="padding:8px;background:#fef9ec;font-weight:bold;width:160px;border-bottom:1px solid #e5e7eb">&#128100; Client</td><td style="padding:8px;font-weight:700;font-size:15px;border-bottom:1px solid #e5e7eb">' + (lead.nom||'Inconnu') + '</td></tr>'
+        + '<tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #e5e7eb">&#128222; Téléphone</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><a href="tel:' + (lead.telephone||'').replace(/\s/g,'') + '" style="color:#d97706;font-weight:700;text-decoration:none;font-size:16px">' + (lead.telephone||'N/A') + '</a></td></tr>'
+        + '<tr><td style="padding:8px;background:#fef9ec;font-weight:bold;border-bottom:1px solid #e5e7eb">&#127981; Type de demande</td><td style="padding:8px;border-bottom:1px solid #e5e7eb">' + (lead.type_demande||lead.besoin||'N/A') + '</td></tr>'
+        + '<tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #e5e7eb">&#127959; Chambre</td><td style="padding:8px;border-bottom:1px solid #e5e7eb">' + (lead.numero_chambre||'—') + '</td></tr>'
+        + '<tr><td style="padding:8px;background:#fef9ec;font-weight:bold;border-bottom:1px solid #e5e7eb">&#128203; Demande</td><td style="padding:8px;border-bottom:1px solid #e5e7eb">' + (lead.demande||lead.besoin||'—') + '</td></tr>'
+        + (lead.resume_ia ? '<tr><td style="padding:8px;font-weight:bold">&#129302; Résumé IA</td><td style="padding:8px;color:#6b7280;font-style:italic">' + lead.resume_ia + '</td></tr>' : '')
+        + '</table>'
+        + recHtml
+        + transcriptHtml
+        + '</div></div>';
+
+    } else {
+      // ── Template SOPHIE — VoiceImmo ──
+      const agentTrouve = (cfg.agents_arr || cfg.agents || []).find(a =>
+        (lead.agent_initiales||'').toLowerCase().split('/').map(s=>s.trim()).some(ini => a.nom.split(' ')[0].toLowerCase() === ini) ||
+        (lead.ville||'').toLowerCase().split(' ').some(v => a.zones.toLowerCase().includes(v))
+      );
+      if (agentTrouve?.email) destList.push(agentTrouve.email);
+      const finalDest = [...new Set(destList)];
+      const agentLabel = agentTrouve ? agentTrouve.nom : (lead.agent_initiales || 'N/A');
+      subject = 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu');
+      html = '<div style="font-family:sans-serif;max-width:600px;margin:0 auto">'
+        + '<div style="background:#4f46e5;color:#fff;padding:24px;border-radius:12px 12px 0 0">'
+        + '<h2 style="margin:0">&#127968; Nouveau lead &mdash; ' + (cfg.nom_agence||'VoiceImmo') + '</h2>'
+        + '</div>'
+        + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
+        + '<table style="width:100%;border-collapse:collapse">'
+        + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Nom</td><td style="padding:8px">' + (lead.nom||'N/A') + '</td></tr>'
+        + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:' + (lead.telephone||'').replace(/\s/g,'') + '" style="color:#4f46e5;font-weight:700;text-decoration:none;font-size:16px">' + (lead.telephone||'N/A') + '</a></td></tr>'
+        + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Besoin</td><td style="padding:8px">' + (lead.besoin||'N/A') + '</td></tr>'
+        + '<tr><td style="padding:8px;font-weight:bold">Ville</td><td style="padding:8px">' + (lead.ville||'N/A') + '</td></tr>'
+        + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Prix</td><td style="padding:8px">' + (lead.prix||'N/A') + '</td></tr>'
+        + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
+        + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
+        + '</table>'
+        + recHtml
+        + '<div style="margin-top:24px;text-align:center">'
+        + '<a href="' + (process.env.WS_BASE_URL || 'https://ws-staging.voiceimmo.fr') + '/mark-lead-done?id=' + (lead.id||'') + '" '
+        + 'style="display:inline-block;background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:12px 32px;border-radius:10px;font-weight:700;font-size:15px">&#9989; Marquer comme Trait&eacute;</a>'
+        + '</div>'
+        + '</div></div>';
+    }
 
     // Construire l'email avec ou sans pièce jointe MP3
     const emailPayload = {
-      from: 'VoiceImmo <no-reply@voxzen.io>',
+      from: cfg.is_hospitality ? 'Voxzen Hospitality <notifications@voxzen.io>' : 'VoiceImmo <no-reply@voxzen.io>',
       to: destList,
-      subject: 'Nouveau lead VoiceImmo — ' + (lead.nom||'Inconnu'),
+      subject,
       html
     };
 
@@ -292,7 +338,6 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
       try {
         const accountSid = process.env.TWILIO_ACCOUNT_SID;
         const authToken  = process.env.TWILIO_AUTH_TOKEN;
-        // Extraire le RecordingSid depuis l'URL proxy ws-staging.voiceimmo.fr/recording/RExxxx
         const recSidMatch = recordingUrl.match(/\/recording\/(RE[a-z0-9]+)/i);
         if (recSidMatch) {
           const recSid = recSidMatch[1];
@@ -1010,6 +1055,18 @@ wss.on('connection', (ws, req) => {
   }
 
   function parseLeadInfo(text) {
+    // PRIORITÉ 0 : Format structuré Hospitality DONNEES: NOM=[...], CHAMBRE=[...], TYPE=[...], DEMANDE=[...]
+    const mHosp = text.match(/DONNEES:\s*NOM=\[([^\]]+)\].*?CHAMBRE=\[([^\]]*)\].*?TYPE=\[([^\]]*)\].*?DEMANDE=\[([^\]]*)\]/is);
+    if (mHosp) {
+      const nomH = mHosp[1].trim();
+      if (nomH && nomH !== 'prénom et nom') {
+        lead.nom = nomH;
+        lead.numero_chambre = mHosp[2].trim() || '';
+        lead.type_demande   = mHosp[3].trim() || 'autre';
+        lead.demande        = mHosp[4].trim() || '';
+        console.log('[HOSP-DATA] ✅', JSON.stringify({nom:lead.nom, chambre:lead.numero_chambre, type:lead.type_demande}));
+      }
+    }
     // PRIORITÉ 1 : Format structuré DONNEES: NOM=[...], BESOIN=[...], etc.
     const mData = text.match(/DONNEES:\s*NOM=\[([^\]]+)\].*?BESOIN=\[([^\]]+)\].*?VILLE=\[([^\]]+)\].*?PRIX=\[([^\]]*)\].*?REF=\[([^\]]*)\]/is);
     if (mData) {
