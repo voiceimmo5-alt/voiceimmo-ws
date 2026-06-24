@@ -332,7 +332,6 @@ wss.on('connection', (ws, req) => {
         oai.send(JSON.stringify({
           type: 'response.create',
           response: {
-            modalities: ['text', 'audio'],
             instructions: `IMPORTANT: Prononce MAINTENANT ce message d'accueil en français, mot pour mot : "${accueil}"`,
           }
         }));
