@@ -728,27 +728,60 @@ function injectRecordingMention(messageAccueil, voix) {
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
 function buildPrompt(c, callerNum) {
-  // Priorité 1 : instructions_ia personnalisées depuis la base de données
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+
+  // ─── Prompt SOFIA — Hospitality ───────────────────────────────────────────
+  if (c.is_hospitality) {
+    // Utiliser les instructions_ia personnalisées si renseignées, sinon le scénario défaut
+    const scenarioBase = (c.instructions_ia && c.instructions_ia.trim())
+      ? c.instructions_ia.trim()
+      : `Notre hôtel est un établissement de standing. Vous êtes Sofia, l'assistante vocale de l'hôtel, disponible 24h/24. Répondez toujours avec élégance, chaleur et professionnalisme.
+
+Le check-in est à 15h, le check-out à 12h. Pour toute extension de séjour, proposez de transférer à la réception.
+Pour le room service, notez la commande et confirmez le délai de 30 minutes.
+Pour les demandes de taxi ou transfert, prenez les détails (heure, destination, nombre de personnes).
+Pour les problèmes techniques dans la chambre, notez le numéro de chambre et créez un ticket.
+Pour les réservations restaurant, notez le nom, le nombre de couverts et l'heure souhaitée.
+
+Parlez la langue du client. Si français → français. Si anglais → anglais. Si le client ne répond pas, dites doucement : "Vous êtes toujours là ?" avant de raccrocher.`;
+
+    const prompt = recordMention
+      + `Tu es Sofia, l'assistante vocale de l'hôtel ${c.nom_agence || 'Grand Hôtel'}. `
+      + `Numéro détecté de l'appelant : ${callerNum}.\n\n`
+      + scenarioBase
+      + `\n\n## RÈGLES ABSOLUES (NE JAMAIS ENFREINDRE)
+- COMMENCE TOUJOURS par : "Bonjour, ${c.nom_agence || 'Grand Hôtel'}, je suis Sofia. Puis-je avoir votre prénom et nom s'il vous plaît ?"
+- Attends la réponse avant de continuer. N'accepte PAS "tout bon" ou une expression comme nom. Si le client dit juste "oui" ou une expression floue, redemande poliment : "Pourriez-vous me donner votre prénom et nom ?"
+- Si tu n'entends pas bien : "Je suis désolée, pourriez-vous répéter ?" — après 2 tentatives, raccroche poliment.
+- Ne donne jamais de tarifs — redirige vers la réception.
+- Numéro de rappel détecté : ${callerNum}
+
+## COLLECTE DONNÉES (OBLIGATOIRE — envoyer avant de raccrocher)
+Envoie une ligne structurée EXACTEMENT ainsi :
+DONNEES: NOM=[prénom et nom complet du client], CHAMBRE=[numéro de chambre ou vide], TYPE=[type de demande : room-service/réveil/taxi/technique/réservation/autre], DEMANDE=[résumé en 1 phrase]`;
+
+    console.log('[PROMPT] ✅ Prompt Sofia Hospitality pour', c.nom_agence, '| enregistrement:', c.enregistrement_actif||false);
+    return prompt;
+  }
+
+  // ─── Prompt SOPHIE — VoiceImmo ────────────────────────────────────────────
+  // Priorité 1 : instructions_ia personnalisées
   if (c.instructions_ia && c.instructions_ia.trim()) {
     let prompt = c.instructions_ia
       .replace(/\{\{CALLER\}\}/g, callerNum)
       .replace(/\{\{NUM\}\}/g, callerNum);
-    // Injecter mention légale si enregistrement activé
     if (c.enregistrement_actif) {
-      const mention = getRecordingMention(c.voix);
-      prompt = mention + prompt;
+      prompt = recordMention + prompt;
     }
-    // Toujours injecter le bloc de collecte structurée
-    prompt += `\n\n## COMMUNICATION DIFFICILE (OBLIGATOIRE)\nSi tu n'entends pas bien l'appelant, si le son est coupé ou la réponse incompréhensible, ne devine pas. Dis naturellement : "Je suis désolé(e), je vous entends mal. Pourriez-vous vous rapprocher du micro ou parler un peu plus fort ?" Si après deux tentatives le problème persiste, dis : "Je suis désolé(e), la communication semble difficile. N'hésitez pas à nous rappeler. Au revoir !" puis raccroche.`;
-    // Toujours injecter le bloc de collecte structurée
-    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
-    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
+    prompt += `\n\n## COMMUNICATION DIFFICILE (OBLIGATOIRE)\nSi tu n'entends pas bien l'appelant, dis : "Je suis désolée, je vous entends mal. Pourriez-vous vous rapprocher du micro ou parler un peu plus fort ?" Si après deux tentatives le problème persiste, invite à rappeler et raccroche.`;
+    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
+    console.log('[PROMPT] ✅ Instructions IA personnalisées pour', c.nom_agence, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
-  // Priorité 2 : prompt générique fallback
+
+  // Priorité 2 : prompt générique VoiceImmo
   console.log('[PROMPT] ⚠️ Fallback prompt générique pour', c.nom_agence);
   const agentsStr = (c.agents_arr || []).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
-  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
   return `${recordMention}Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
