@@ -724,4 +724,4 @@ app.post('/twiml-suspended', (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v25-clean sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v26-ga-api-1782326697 sur port ${PORT}`));
