@@ -190,7 +190,7 @@ async function sendEmail(lead, cfg) {
 }
 
 // ─── Endpoints HTTP ───────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v25-clean', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v26-ga-api', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -200,14 +200,14 @@ app.get('/debug', async (req, res) => {
     const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
     oaiOk = r.ok;
   } catch(_) {}
-  res.json({ version: 'v25-clean', hasOAI: hasKey, oaiOk, node: process.version });
+  res.json({ version: 'v26-ga-api', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
   const n = parseInt(req.query.n || '50');
   const since = parseInt(req.query.since || '0');
   const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
-  res.json({ logs, serverTime: Date.now(), version: 'v25-clean' });
+  res.json({ logs, serverTime: Date.now(), version: 'v26-ga-api' });
 });
 
 app.get('/stats', async (req, res) => {
@@ -218,7 +218,7 @@ app.get('/stats', async (req, res) => {
   } catch(_) {}
   res.json({
     ok: true,
-    version: 'v25-clean',
+    version: 'v26-ga-api',
     uptime: Math.floor(process.uptime()),
     memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     oaiOk,
