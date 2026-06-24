@@ -927,7 +927,9 @@ wss.on('connection', (ws, req) => {
         const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
+          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage immédiat');
+          // Annuler immédiatement la génération en cours pour éviter tout récap post-fin
+          try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.cancel'})); } catch(e){}
           setTimeout(async () => {
             // 1. API REST Twilio EN PREMIER → raccroche le téléphone physiquement
             await hangupTwilio(callSid);
@@ -935,7 +937,7 @@ wss.on('connection', (ws, req) => {
             hangup();
             // 3. Sauvegarder le lead + envoyer email
             await flush();
-          }, 2000);
+          }, 500);
         }
       }
 
