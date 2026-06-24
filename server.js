@@ -123,7 +123,7 @@ const CONFIGS_FALLBACK = {
     hotel_id:            'HOSP-DEMO',
     voix:                'shimmer',
     site_internet:       'https://hospitality.voxzen.io',
-    message_accueil:     "Bonjour, SVIA Hospitality, je suis Sofia. Puis-je avoir votre prénom et nom, s'il vous plaît ?",
+    message_accueil:     null,
     instructions_ia:     null,
     destinataires_email: ['christophe.despretz@gmail.com'],
     enregistrement_actif: true,
@@ -174,6 +174,7 @@ function mapClientToConfig(c) {
     agents_arr,
     destinataires_email:  dest,
     enregistrement_actif: c.enregistrement_actif === true,
+    is_hospitality:       c.secteur === 'hospitality' || c.is_hospitality === true || false,
   };
 }
 
@@ -631,7 +632,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1717' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1726' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -858,6 +859,41 @@ wss.on('connection', (ws, req) => {
   // ─── Sauvegarde lead en base ────────────────────────────────────────────────
   async function saveLead(leadData, cfgData) {
     try {
+      const isHospitality = cfgData?.is_hospitality === true;
+      if (isHospitality) {
+        // ─── Hospitality : sauvegarder dans AppelHotel ─────────────────────
+        const hospPayload = {
+          hotel_id:        cfgData?.client_db_id || cfgData?.hotel_id || 'HOSP-DEMO',
+          call_sid:        leadData.callSid || '',
+          type_demande:    leadData.type_demande || 'autre',
+          nom_client:      leadData.nom      || 'Inconnu',
+          telephone:       leadData.tel      || 'Inconnu',
+          numero_chambre:  leadData.numero_chambre || '',
+          demande:         leadData.demande  || '',
+          resume_ia:       leadData.demande  || '',
+          statut:          'Nouveau',
+          email_envoye:    true,
+          notes:           leadData.transcript && leadData.transcript.length
+            ? leadData.transcript.map(e =>
+                (e.r === 'a' ? 'Sofia: ' : 'Client: ') + e.t
+              ).join('\n')
+            : '',
+        };
+        const resH = await fetch(`${BASE44_APP_URL}/saveAppelHotel`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(hospPayload),
+          signal:  AbortSignal.timeout(15000)
+        });
+        const dataH = await resH.json();
+        if (dataH.ok) {
+          console.log('[HOSP] ✅ AppelHotel sauvegardé, id:', dataH.id);
+        } else {
+          console.warn('[HOSP] ⚠️ Erreur saveAppelHotel:', JSON.stringify(dataH));
+        }
+        return;
+      }
+      // ─── VoiceImmo : sauvegarder dans Lead (comportement existant) ─────────
       const payload = {
         nom:              leadData.nom      || 'Inconnu',
         telephone:        leadData.tel      || 'Inconnu',
@@ -985,7 +1021,9 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
+        const nomAgAccueil = cfg?.nom_agence || 'Grand Hôtel';
+  const accueilDefault = `Bonjour, ${nomAgAccueil}, je suis Sofia. Puis-je avoir votre prénom et nom, s'il vous plaît ?`;
+  let accueil = cfg?.message_accueil || (cfg?.is_hospitality ? accueilDefault : DEF_CFG().message_accueil);
         // Injecter la mention RGPD si enregistrement actif
         if (cfg?.enregistrement_actif) {
           accueil = injectRecordingMention(accueil, cfg?.voix);
