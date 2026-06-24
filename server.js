@@ -1114,16 +1114,29 @@ wss.on('connection', (ws, req) => {
       if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
       if (!hangingUp && ready) {
         silenceTimer = setTimeout(async () => {
-          if (!hangingUp) {
+          if (hangingUp) return;
+          // Étape 1 : demander si l'appelant est toujours là
+          console.log('[SILENCE] 10s sans audio → demande présence');
+          try {
+            if (oai && oai.readyState === 1) {
+              oai.send(JSON.stringify({
+                type: 'response.create',
+                response: { instructions: 'Dis naturellement, avec une voix douce et un peu inquiète : "Vous êtes toujours là ?" — rien d\'autre, juste cette phrase.' }
+              }));
+            }
+          } catch(e) {}
+          // Étape 2 : si toujours pas de réponse après 10s supplémentaires → raccrocher
+          silenceTimer = setTimeout(async () => {
+            if (hangingUp) return;
             hangingUp = true;
-            console.log('[SILENCE] 10s sans audio → raccrochage automatique');
-            try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.create', response:{instructions:'Dis exactement : "Je ne vous entends plus, je raccroche. N\'hésitez pas à rappeler. Au revoir !"'}})); } catch(e){}
+            console.log('[SILENCE] 20s total sans audio → raccrochage');
+            try { if (oai && oai.readyState === 1) oai.send(JSON.stringify({type:'response.create', response:{instructions:'Dis : "Je ne vous entends plus, je vais raccrocher. N\'hésitez pas à nous rappeler. Au revoir !"'}})); } catch(e){}
             setTimeout(async () => {
               await hangupTwilio(callSid);
               hangup();
               await flush();
             }, 2500);
-          }
+          }, 10000);
         }, 10000);
       }
       if (oai && oai.readyState === WebSocket.OPEN && ready) {
