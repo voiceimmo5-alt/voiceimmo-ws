@@ -2,9 +2,9 @@
   "name": "svia-hospitality",
   "version": "1.0.0",
   "description": "SVIA Hospitality Voxzen — WebSocket serveur vocal pour hôtels",
-  "main": "server.js",
+  "main": "server_hospitality.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server_hospitality.js"
   },
   "dependencies": {
     "ws": "^8.16.0",
