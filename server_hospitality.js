@@ -11,6 +11,14 @@
  */
 'use strict';
 
+// Voix valides OpenAI Realtime GA (camille/onyx/nova/etc → coral par défaut)
+const VALID_OAI_VOICES = ['alloy','ash','ballad','coral','echo','sage','shimmer','verse','marin','cedar'];
+function resolveVoice(v) {
+  if (v && VALID_OAI_VOICES.includes(v)) return v;
+  return 'coral'; // fallback féminin
+}
+
+
 const http    = require('http');
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
@@ -347,7 +355,7 @@ wss.on('connection', (ws, req) => {
             },
             output: {
               format: { type: 'audio/pcmu' },
-              voice: cfg?.voix || 'coral'
+              voice: resolveVoice(cfg?.voix)
             }
           }
         }
