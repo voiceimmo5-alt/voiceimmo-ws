@@ -365,7 +365,8 @@ wss.on('connection', (ws, req) => {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        const accueil = cfg?.message_accueil || `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
+        const nomHotel = cfg?.nom_hotel || 'l\'hôtel';
+        const accueil = `Bienvenue à l'Hôtel ${nomHotel}, je suis Sofia, comment puis-je vous aider ?`;
         console.log('[OAI] Session prête → accueil:', accueil);
         oai.send(JSON.stringify({
           type: 'response.create',
