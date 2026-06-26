@@ -330,7 +330,7 @@ class ApaleoConnector {
   constructor(config = {}) {
     this.clientId = config.client_id || '';
     this.clientSecret = config.client_secret || '';
-    this.propertyId = config.property_id || '';
+    this.propertyId = config.property_id || 'PAR'; // PAR = Hotel Paris (sandbox demo Apaleo)
     this.baseUrl = 'https://api.apaleo.com';
     this.authUrl = 'https://identity.apaleo.com/connect/token';
     this.name = 'Apaleo';
@@ -352,7 +352,7 @@ class ApaleoConnector {
         grant_type: 'client_credentials',
         client_id: this.clientId,
         client_secret: this.clientSecret,
-        scope: 'reservations.read reservations.manage rates.read',
+        // Pas de scope explicite → Apaleo retourne tous les scopes configurés sur l'app
       }),
     });
     const data = await res.json();
@@ -367,7 +367,9 @@ class ApaleoConnector {
     const res = await fetchWithTimeout(`${this.baseUrl}${path}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
-    return res.json();
+    const text = await res.text();
+    if (!text || text.trim() === '') return {};
+    return JSON.parse(text);
   }
 
   async _post(path, body) {
@@ -377,28 +379,63 @@ class ApaleoConnector {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return res.json();
+    const text = await res.text();
+    if (!text || text.trim() === '') return {};
+    return JSON.parse(text);
   }
 
   async getReservation(reservationId) {
-    const data = await this._get(`/booking/v1/reservations/${reservationId}`);
+    const data = await this._get(`/booking/v1/reservations/${reservationId}?expand=property,unit,unitGroup`);
     return this._mapReservation(data);
+  }
+
+  async getReservationByPhone(telephone) {
+    // Apaleo ne supporte pas la recherche par téléphone directement
+    // On liste les réservations récentes et on filtre
+    const data = await this._get(`/booking/v1/reservations?propertyIds=${this.propertyId || 'PAR'}&pageSize=50`);
+    const reservations = data.reservations || [];
+    const found = reservations.find(r => (r.primaryGuest?.phone || '').replace(/\s/g,'') === telephone.replace(/\s/g,''));
+    return found ? this._mapReservation(found) : null;
+  }
+
+  async getReservationByRoom(numeroChambre) {
+    const data = await this._get(`/booking/v1/reservations?propertyIds=${this.propertyId || 'PAR'}&unitIds=${numeroChambre}&status=Confirmed&pageSize=10`);
+    const reservations = data.reservations || [];
+    return reservations.length > 0 ? this._mapReservation(reservations[0]) : null;
   }
 
   async checkAvailability({ dateArrivee, dateDepart, nbPersonnes = 1, typeChambre = null }) {
     const params = new URLSearchParams({
-      propertyId: this.propertyId,
-      arrival: dateArrivee,
-      departure: dateDepart,
-      adults: nbPersonnes,
+      propertyId: this.propertyId || 'PAR',
+      from: dateArrivee,   // format YYYY-MM-DD
+      to: dateDepart,
+      adults: String(nbPersonnes),
     });
-    if (typeChambre) params.append('unitGroup', typeChambre);
-    const data = await this._get(`/rateplan/v1/offers?${params}`);
+    const data = await this._get(`/availability/v1/unit-groups?${params}`);
+    const slices = data.timeSlices || [];
+    // Calculer chambres disponibles depuis le premier slice
+    const firstSlice = slices[0]?.property || {};
+    const dispo = (firstSlice.sellableCount || firstSlice.availableCount || 0) > 0;
+    // Extraire les types de chambres disponibles
+    const unitGroups = slices[0]?.unitGroups || [];
+    const typesDispos = unitGroups
+      .filter(ug => (ug.sellableCount || 0) > 0)
+      .map(ug => `${ug.unitGroup.name} (${ug.sellableCount} dispo)`);
+
     return {
-      disponible: (data.timeSlices || []).length > 0,
+      disponible: dispo,
       source: 'apaleo',
       dateArrivee, dateDepart, nbPersonnes,
-      offres: (data.timeSlices || []).slice(0, 5),
+      chambresDisponibles: firstSlice.sellableCount || 0,
+      chambresOccupees: firstSlice.soldCount || 0,
+      tauxOccupation: Math.round((firstSlice.occupancy || 0) * 10) / 10,
+      typesDisponibles: typesDispos,
+      chambres: unitGroups.filter(ug => (ug.sellableCount||0) > 0).map(ug => ({
+        type: ug.unitGroup.name,
+        code: ug.unitGroup.code,
+        disponibles: ug.sellableCount,
+        description: ug.unitGroup.description,
+      })),
     };
   }
 
@@ -416,32 +453,46 @@ class ApaleoConnector {
   }
 
   async getBill(reservationId) {
-    const data = await this._get(`/booking/v1/reservations/${reservationId}/folio`);
+    // Endpoint correct Apaleo : /finance/v1/folios?reservationId=...
+    const data = await this._get(`/finance/v1/folios?reservationId=${reservationId}`);
+    const folios = data.folios || [];
+    const mainFolio = folios.find(f => f.isMainFolio) || folios[0] || {};
+    const charges = mainFolio.charges || [];
+    // Le solde est dans folio.balance (négatif = montant dû par le client)
+    const balance = mainFolio.balance || {};
+    const total = Math.abs(balance.amount || 0);
     return {
       reservationId,
       source: 'apaleo',
-      montantTTC: data.balance?.amount || 0,
-      devise: data.balance?.currency || 'EUR',
-      items: (data.charges || []).map(c => ({
-        libelle: c.serviceName || c.name,
-        montant: c.amount?.amount || 0,
+      folioId: mainFolio.id || '',
+      montantTTC: Math.round(total * 100) / 100,
+      devise: balance.currency || 'EUR',
+      statut: mainFolio.status || '',
+      items: charges.slice(0, 10).map(c => ({
+        libelle: c.serviceType || c.name || 'Prestation',
+        montant: c.amount?.grossAmount || c.amount?.amount || 0,
+        date: (c.serviceDate || '').slice(0, 10),
       })),
     };
   }
 
   _mapReservation(r) {
+    const guest = r.primaryGuest || r.booker || {};
     return {
       id: r.id,
-      nom: r.booker?.lastName || '',
-      prenom: r.booker?.firstName || '',
-      email: r.booker?.email || '',
-      telephone: r.booker?.phone || '',
-      numeroChambre: r.unit?.name || r.unitGroup?.code || '',
-      typeChambre: r.unitGroup?.name || '',
-      dateArrivee: r.arrival?.slice(0, 10) || '',
-      dateDepart: r.departure?.slice(0, 10) || '',
+      nom: guest.lastName || '',
+      prenom: guest.firstName || '',
+      email: guest.email || '',
+      telephone: guest.phone || '',
+      numeroChambre: r.unit?.name || r.unit?.id || '',
+      typeChambre: r.unitGroup?.name || r.unitGroup?.code || '',
+      dateArrivee: (r.arrival || '').slice(0, 10),
+      dateDepart: (r.departure || '').slice(0, 10),
+      nbNuits: r.nights || 0,
+      nbPersonnes: r.adults || 1,
       statut: r.status || '',
       source: 'apaleo',
+      propertyId: r.property?.id || '',
     };
   }
 }
