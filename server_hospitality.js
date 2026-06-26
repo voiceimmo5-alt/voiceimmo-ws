@@ -82,6 +82,13 @@ async function fetchHotelConfig(numeroVoxzen) {
 
 // ─── Prompt système SVIA Hospitality ────────────────────────────────────────
 function buildHospPrompt(cfg) {
+  // Si instructions_ia personnalisées en base → les utiliser directement
+  if (cfg.instructions_ia && cfg.instructions_ia.trim().length > 20) {
+    // Remplacer les variables de template
+    return cfg.instructions_ia
+      .replace(/\(\$Nom de l'hôtel\)/g, cfg.nom_hotel || 'l\'hôtel')
+      .replace(/\$nom_hotel/g, cfg.nom_hotel || 'l\'hôtel');
+  }
   const services = cfg.services_actifs || [];
   const servicesList = services.map(s => {
     const labels = {
@@ -358,7 +365,7 @@ wss.on('connection', (ws, req) => {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        const accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
+        const accueil = cfg?.message_accueil || `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
         console.log('[OAI] Session prête → accueil:', accueil);
         oai.send(JSON.stringify({
           type: 'response.create',
