@@ -58,9 +58,10 @@ async function fetchHotelConfig(numeroVoxzen) {
     });
     const data = await res.json();
     if (data.success) {
-      configCache.set(numeroVoxzen, { config: data, ts: Date.now() });
-      console.log(`[CFG] ✅ Config chargée pour ${numeroVoxzen} → ${data.nom_hotel}`);
-      return data;
+      const cfg = data.config || data;
+      configCache.set(numeroVoxzen, { config: cfg, ts: Date.now() });
+      console.log(`[CFG] ✅ Config chargée pour ${numeroVoxzen} → ${cfg.nom_hotel}`);
+      return cfg;
     }
   } catch(e) {
     console.error('[CFG] ❌ Erreur fetch config:', e.message);
