@@ -329,12 +329,19 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'realtime',
           instructions,
-          voice: cfg?.voix || 'coral',
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 }
+          audio: {
+            input: {
+              format: { type: 'audio/pcmu' },
+              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+            },
+            output: {
+              format: { type: 'audio/pcmu' },
+              voice: cfg?.voix || 'coral'
+            }
+          }
         }
       }));
     });
