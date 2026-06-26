@@ -19,6 +19,7 @@ function resolveVoice(v) {
 }
 
 
+const { createPMSConnector, pmsQuery } = require('./pms_connector');
 const http    = require('http');
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
@@ -67,6 +68,9 @@ async function fetchHotelConfig(numeroVoxzen) {
     const data = await res.json();
     if (data.success) {
       const cfg = data.config || data;
+      // Instancier le connecteur PMS selon le pms_type de l'hôtel
+      cfg._pms = createPMSConnector(cfg.pms_type, cfg.pms_config || {});
+      console.log(`[CFG] PMS: ${cfg._pms?.name || 'aucun'}`);
       configCache.set(numeroVoxzen, { config: cfg, ts: Date.now() });
       console.log(`[CFG] ✅ Config chargée pour ${numeroVoxzen} → ${cfg.nom_hotel}`);
       return cfg;
@@ -432,6 +436,24 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
         transcript.push({ r: 'u', t: m.transcript });
         console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
+        // PMS Query automatique si demande de réservation / disponibilité détectée
+        if (cfg?._pms) {
+          const t = m.transcript.toLowerCase();
+          if (t.includes('disponib') || t.includes('libre') || t.includes('chambre')) {
+            pmsQuery(cfg._pms, 'check_availability', {
+              dateArrivee: new Date().toISOString().slice(0,10),
+              dateDepart: new Date(Date.now()+86400000).toISOString().slice(0,10),
+              nbPersonnes: 1
+            }).then(res => {
+              if (res.success && oai.readyState === 1) {
+                oai.send(JSON.stringify({ type: 'conversation.item.create', item: {
+                  type: 'message', role: 'system',
+                  content: [{ type: 'input_text', text: `[PMS] ${res.message_fr}` }]
+                }}));
+              }
+            }).catch(() => {});
+          }
+        }
         parseHospData(m.transcript, ctx);
       }
 
