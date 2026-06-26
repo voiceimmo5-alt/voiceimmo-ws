@@ -466,12 +466,12 @@ wss.on('connection', (ws, req) => {
 
       // Timeout 2 min
       callTimer = setTimeout(async () => {
-        console.log('[TIMER] 2min → raccrochage automatique');
+        console.log('[TIMER] 5min → raccrochage automatique');
         hangingUp = true;
         await hangupTwilio(callSid);
         hangup();
         await flush();
-      }, 120000);
+      }, 300000);
     }
 
     if (m.event === 'media' && m.media?.payload) {
