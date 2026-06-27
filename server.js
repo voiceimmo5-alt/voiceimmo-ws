@@ -72,34 +72,7 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
-// ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
-let OAI_MODEL = process.env.OAI_MODEL || '';
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY_4 || process.env.ELEVENLABS_API_KEY || '';
-const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '39BbQfJTexvpWtOQZ4Xr'; // Amélie - FR
-const USE_ELEVENLABS_TTS  = process.env.USE_ELEVENLABS_TTS !== 'false'; // activé par défaut
-
-async function detectRealtimeModel() {
-  if (OAI_MODEL) {
-    console.log(`[MODEL] Modèle forcé via env: ${OAI_MODEL}`);
-    return;
-  }
-  try {
-    const r = await fetch('https://api.openai.com/v1/models', {
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
-    });
-    const d = await r.json();
-    const PREFERRED = [
-      'gpt-realtime-2', 'gpt-realtime', 'gpt-4o-realtime-preview-2024-12-17',
-      'gpt-4o-realtime-preview', 'gpt-realtime-mini'
-    ];
-    const available = new Set((d.data || []).map(m => m.id));
-    OAI_MODEL = PREFERRED.find(m => available.has(m)) || 'gpt-realtime';
-    console.log(`[MODEL] ✅ Modèle Realtime détecté: ${OAI_MODEL}`);
-  } catch(e) {
-    OAI_MODEL = 'gpt-realtime';
-    console.log(`[MODEL] ⚠️ Détection échouée, fallback: ${OAI_MODEL}`);
-  }
-}
+const OAI_MODEL          = process.env.OAI_MODEL          || 'gpt-realtime';
 // const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
 // const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
 // const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
@@ -1088,49 +1061,15 @@ wss.on('connection', (ws, req) => {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        if (USE_ELEVENLABS_TTS && ELEVENLABS_API_KEY) {
-          // ElevenLabs TTS pour le message d'accueil
-          console.log('[EL-TTS] Accueil via ElevenLabs Amélie...');
-          sendElevenLabsAudio(ws, streamSid, accueil, ELEVENLABS_VOICE_ID).catch(e => {
-            console.error('[EL-TTS] Fallback OpenAI:', e.message);
-            oai.send(JSON.stringify({
-              type: 'response.create',
-              response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
-            }));
-          });
-          // Demander à OpenAI de passer à l'étape 1 sans re-générer l'accueil
-          setTimeout(() => {
-            oai.send(JSON.stringify({
-              type: 'response.create',
-              response: { instructions: 'Le message d\'accueil a déjà été dit. Attends la réponse du client.' }
-            }));
-          }, 2500);
-        } else {
-          oai.send(JSON.stringify({
-            type: 'response.create',
-            response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
-          }));
-        }
+        oai.send(JSON.stringify({
+          type: 'response.create',
+          response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
+        }));
       }
 
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
-        if (!USE_ELEVENLABS_TTS || !ELEVENLABS_API_KEY) {
-          // Fallback : audio OpenAI direct
-          if (ws.readyState === 1) {
-            ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
-          }
-        }
-        // Si ElevenLabs actif : on ignore l'audio OpenAI, on attend le transcript
-      }
-
-      // ElevenLabs TTS : intercepter le transcript et générer l'audio via ElevenLabs
-      if (USE_ELEVENLABS_TTS && ELEVENLABS_API_KEY &&
-          m.type === 'response.audio_transcript.done' && m.transcript && streamSid) {
-        const txt = m.transcript.trim();
-        if (txt) {
-          sendElevenLabsAudio(ws, streamSid, txt, ELEVENLABS_VOICE_ID).catch(e =>
-            console.error('[EL-TTS] Erreur réponse:', e.message)
-          );
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
         }
       }
 
@@ -1643,53 +1582,4 @@ app.post('/twiml-el', async (req, res) => {
     res.status(500).send('Erreur interne');
   }
 });
-
-// ─── ElevenLabs TTS streaming → retourne Buffer ulaw 8kHz ───────────────────
-async function streamElevenLabsTTS(text, voiceId) {
-  const vid = voiceId || ELEVENLABS_VOICE_ID;
-  const url = `https://api.elevenlabs.io/v1/text-to-speech/${vid}/stream`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': ELEVENLABS_API_KEY,
-      'Content-Type': 'application/json',
-      'Accept': 'audio/basic'
-    },
-    body: JSON.stringify({
-      text,
-      model_id: 'eleven_turbo_v2_5',
-      output_format: 'ulaw_8000',
-      voice_settings: { stability: 0.4, similarity_boost: 0.85, style: 0.3, use_speaker_boost: true }
-    })
-  });
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`ElevenLabs TTS error ${resp.status}: ${err}`);
-  }
-  const buf = Buffer.from(await resp.arrayBuffer());
-  return buf;
-}
-
-// Envoyer audio ElevenLabs vers Twilio par chunks de 160 bytes (20ms @ 8kHz mulaw)
-async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
-  try {
-    const audioBuf = await streamElevenLabsTTS(text, voiceId);
-    const CHUNK = 160;
-    for (let i = 0; i < audioBuf.length; i += CHUNK) {
-      const chunk = audioBuf.slice(i, i + CHUNK);
-      if (ws.readyState === 1 && streamSid) {
-        ws.send(JSON.stringify({
-          event: 'media',
-          streamSid,
-          media: { payload: chunk.toString('base64') }
-        }));
-      }
-    }
-    console.log(`[EL-TTS] ✅ Audio envoyé: ${audioBuf.length} bytes pour "${text.slice(0,60)}"`);
-  } catch(e) {
-    console.error('[EL-TTS] ❌ Erreur:', e.message);
-  }
-}
-
-detectRealtimeModel();
 server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v54-stripe sur port ${PORT}`));
