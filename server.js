@@ -575,7 +575,7 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1806' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v54-stripe', service: 'VoiceImmo WS', build: '20260624.1733' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -1084,7 +1084,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /au revoir/i;
+        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
@@ -1482,7 +1482,7 @@ hospWss.on('connection', (ws, req) => {
         if (transcript.some(e => e.r === 'a' && e.t === t)) return;
         transcript.push({ r: 'a', t });
         console.log(`[SOFIA-HOSP] "${t.slice(0,100)}"`);
-        const finPhrases = /au revoir/i;
+        const finPhrases = /au revoir|bonne journée|bonne soirée|excellente journée|excellente soirée|excellente nuit/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[HOSP-FIN] ✅ Phrase de fin → raccrochage dans 2s');
@@ -1539,25 +1539,47 @@ hospWss.on('connection', (ws, req) => {
   ws.on('error', (e) => console.error('[HOSP-WS] Erreur:', e.message));
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v54-stripe sur port ${PORT}`));
 
-// ─── TwiML ElevenLabs ConvAI (both_tracks) ───────────────────────────────────
-// Génère un signed URL ElevenLabs et retourne le TwiML avec both_tracks
-// Nécessaire car le webhook natif ElevenLabs utilise inbound_track seulement
+// ─── TwiML pour ElevenLabs ConvAI (both_tracks) ──────────────────────────────
+// Cet endpoint génère un TwiML avec Stream both_tracks vers ElevenLabs
+// pour que Sophie puisse PARLER (et pas seulement écouter)
 app.post('/twiml-el', async (req, res) => {
-  const ELABS_KEY = process.env.ELEVENLABS_API_KEY_4 || process.env.ELEVENLABS_API_KEY || '';
+  const caller = req.body.From   || req.body.Caller || '';
+  const to     = req.body.To     || req.body.Called || '';
+  const sid    = req.body.CallSid|| '';
+  console.log(`[TWIML-EL] From:${caller} To:${to} Sid:${sid}`);
+
+  // Obtenir un signed URL de conversation ElevenLabs
+  const ELABS_KEY = process.env.ELEVENLABS_API_KEY_4 || process.env.ELEVENLABS_API_KEY;
   const AGENT_ID_EL = 'agent_9201kw4jr5j0fbgbfx06mfz28a1x';
-  console.log('[TWIML-EL] Appel reçu, génération signed URL ElevenLabs...');
+
   try {
-    const resp = await fetch('https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=' + AGENT_ID_EL, {
+    const signedResp = await fetch(`https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${AGENT_ID_EL}`, {
       headers: { 'xi-api-key': ELABS_KEY }
     });
-    const data = await resp.json();
-    const wsUrl = data.signed_url;
-    if (!wsUrl) { console.error('[TWIML-EL] Erreur:', JSON.stringify(data)); res.status(500).send('Erreur'); return; }
-    console.log('[TWIML-EL] signed_url OK, envoi TwiML both_tracks');
-    res.set('Content-Type', 'text/xml');
-    res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="' + wsUrl + '" track="both_tracks" /></Connect></Response>');
-  } catch(e) { console.error('[TWIML-EL] Exception:', e.message); res.status(500).send('Erreur'); }
-});
+    const signedData = await signedResp.json();
+    const wsUrl = signedData.signed_url;
+    console.log(`[TWIML-EL] signed_url obtenu: ${wsUrl ? wsUrl.substring(0,60)+'...' : 'ERREUR'}`);
 
+    if (!wsUrl) {
+      console.error('[TWIML-EL] Erreur signed_url:', JSON.stringify(signedData));
+      res.status(500).send('Erreur signed_url');
+      return;
+    }
+
+    res.set('Content-Type', 'text/xml');
+    res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${wsUrl}" track="both_tracks">
+      <Parameter name="caller" value="${caller}" />
+      <Parameter name="to" value="${to}" />
+    </Stream>
+  </Connect>
+</Response>`);
+  } catch(e) {
+    console.error('[TWIML-EL] Exception:', e.message);
+    res.status(500).send('Erreur interne');
+  }
+});
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v54-stripe sur port ${PORT}`));
