@@ -72,7 +72,31 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
-const OAI_MODEL          = process.env.OAI_MODEL          || 'gpt-realtime';
+// ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
+let OAI_MODEL = process.env.OAI_MODEL || '';
+
+async function detectRealtimeModel() {
+  if (OAI_MODEL) {
+    console.log(`[MODEL] Modèle forcé via env: ${OAI_MODEL}`);
+    return;
+  }
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
+    });
+    const d = await r.json();
+    const PREFERRED = [
+      'gpt-realtime-2', 'gpt-realtime', 'gpt-4o-realtime-preview-2024-12-17',
+      'gpt-4o-realtime-preview', 'gpt-realtime-mini'
+    ];
+    const available = new Set((d.data || []).map(m => m.id));
+    OAI_MODEL = PREFERRED.find(m => available.has(m)) || 'gpt-realtime';
+    console.log(`[MODEL] ✅ Modèle Realtime détecté: ${OAI_MODEL}`);
+  } catch(e) {
+    OAI_MODEL = 'gpt-realtime';
+    console.log(`[MODEL] ⚠️ Détection échouée, fallback: ${OAI_MODEL}`);
+  }
+}
 // const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
 // const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
 // const GMAIL_REFRESH_TOKEN= process.env.GMAIL_REFRESH_TOKEN|| '';
@@ -1582,4 +1606,5 @@ app.post('/twiml-el', async (req, res) => {
     res.status(500).send('Erreur interne');
   }
 });
+detectRealtimeModel();
 server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v54-stripe sur port ${PORT}`));
