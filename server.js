@@ -1540,3 +1540,24 @@ hospWss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v54-stripe sur port ${PORT}`));
+
+// ─── TwiML ElevenLabs ConvAI (both_tracks) ───────────────────────────────────
+// Génère un signed URL ElevenLabs et retourne le TwiML avec both_tracks
+// Nécessaire car le webhook natif ElevenLabs utilise inbound_track seulement
+app.post('/twiml-el', async (req, res) => {
+  const ELABS_KEY = process.env.ELEVENLABS_API_KEY_4 || process.env.ELEVENLABS_API_KEY || '';
+  const AGENT_ID_EL = 'agent_9201kw4jr5j0fbgbfx06mfz28a1x';
+  console.log('[TWIML-EL] Appel reçu, génération signed URL ElevenLabs...');
+  try {
+    const resp = await fetch('https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=' + AGENT_ID_EL, {
+      headers: { 'xi-api-key': ELABS_KEY }
+    });
+    const data = await resp.json();
+    const wsUrl = data.signed_url;
+    if (!wsUrl) { console.error('[TWIML-EL] Erreur:', JSON.stringify(data)); res.status(500).send('Erreur'); return; }
+    console.log('[TWIML-EL] signed_url OK, envoi TwiML both_tracks');
+    res.set('Content-Type', 'text/xml');
+    res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="' + wsUrl + '" track="both_tracks" /></Connect></Response>');
+  } catch(e) { console.error('[TWIML-EL] Exception:', e.message); res.status(500).send('Erreur'); }
+});
+
