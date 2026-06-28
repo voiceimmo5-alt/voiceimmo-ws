@@ -602,27 +602,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v56-twiml-url-fix', service: 'VoiceImmo WS', build: '20260628.0932' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v57-openai-ga-fix', service: 'VoiceImmo WS', build: '20260628.1010' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v56-twiml-url-fix', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v57-openai-ga-fix', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v56-twiml-url-fix' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v57-openai-ga-fix' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v56-twiml-url-fix', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v57-openai-ga-fix', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1055,19 +1055,13 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG(), callerNum),
-          audio: {
-            input: {
-              format: { type: 'audio/pcmu' },
-              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
-            },
-            output: {
-              format: { type: 'audio/pcmu' },
-              voice: cfg?.voix || 'coral'
-            }
-          }
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 },
+          voice: (cfg || DEF_CFG())?.voix || 'coral',
+          modalities: ['audio', 'text']
         }
       }));
     });
@@ -1503,19 +1497,13 @@ hospWss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'realtime',
           instructions: buildHospPrompt(cfg),
-          audio: {
-            input: {
-              format: { type: 'audio/pcmu' },
-              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 }
-            },
-            output: {
-              format: { type: 'audio/pcmu' },
-              voice: cfg?.voix || 'coral'
-            }
-          }
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 },
+          voice: cfg?.voix || 'coral',
+          modalities: ['audio', 'text']
         }
       }));
     });
