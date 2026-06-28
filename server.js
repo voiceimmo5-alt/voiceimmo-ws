@@ -7,6 +7,14 @@ const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server, perMessageDeflate: false });
 
+// Fix RSV1 — Railway Hikari / Cloudflare force perMessageDeflate même si désactivé côté serveur
+// On intercepte l'upgrade HTTP pour supprimer l'extension avant que ws library la parse
+server.on('upgrade', (req, socket, head) => {
+  // Supprimer toute négociation de compression WebSocket
+  delete req.headers['sec-websocket-extensions'];
+  req.headers['sec-websocket-extensions'] = '';
+});
+
 // Route Stripe raw body — DOIT être avant express.json()
 // ─── Stripe — Webhook ────────────────────────────────────────────────────────
 // IMPORTANT : raw body AVANT express.json() — à placer avant app.use(express.json())
@@ -602,27 +610,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v57-openai-ga-fix', service: 'VoiceImmo WS', build: '20260628.1010' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v58-rsv1-fix', service: 'VoiceImmo WS', build: '20260628.1030' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v57-openai-ga-fix', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v58-rsv1-fix', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v57-openai-ga-fix' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v58-rsv1-fix' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v57-openai-ga-fix', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v58-rsv1-fix', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
