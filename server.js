@@ -610,27 +610,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v60-stream-url', service: 'VoiceImmo WS', build: '20260628.1130' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v61-session-type', service: 'VoiceImmo WS', build: '20260628.1200' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v60-stream-url', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v61-session-type', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v60-stream-url' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v61-session-type' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v60-stream-url', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v61-session-type', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1063,6 +1063,7 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG(), callerNum),
           input_audio_format: 'g711_ulaw',
           output_audio_format: 'g711_ulaw',
@@ -1505,6 +1506,7 @@ hospWss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
+          type: 'realtime',
           instructions: buildHospPrompt(cfg),
           input_audio_format: 'g711_ulaw',
           output_audio_format: 'g711_ulaw',
