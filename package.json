@@ -1,10 +1,10 @@
 {
   "name": "voiceimmo-ws",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "VoiceImmo WebSocket server — autonomous, no Base44 dependency",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node start-with-tunnel.js"
   },
   "dependencies": {
     "ws": "^8.16.0",
@@ -13,6 +13,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "_deploy": "v32-autonomous"
+  }
 }
