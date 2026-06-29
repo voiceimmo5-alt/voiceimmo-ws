@@ -1668,5 +1668,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-detectRealtimeModel();
 server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v61 sur port ${PORT}`));
