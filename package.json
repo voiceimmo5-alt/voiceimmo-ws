@@ -1,6 +1,6 @@
 {
   "name": "voiceimmo-ws",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "VoiceImmo WebSocket server",
   "main": "server.js",
   "scripts": {
@@ -16,5 +16,6 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "_cache_bust": "v61-rebuild"
 }
