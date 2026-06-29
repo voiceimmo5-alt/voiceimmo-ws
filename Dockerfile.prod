@@ -8,8 +8,8 @@ RUN npm install --omit=dev
 COPY server.js .
 
 ENV NODE_ENV=production
-ENV OAI_MODEL=gpt-realtime
 
 EXPOSE 8080
 
+# Cache bust: 1782399999
 CMD ["node", "server.js"]
