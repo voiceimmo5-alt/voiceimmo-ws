@@ -5,6 +5,14 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const app    = express();
 const server = http.createServer(app);
+
+// Fix RSV1 — DOIT être AVANT la création du WSS pour que notre handler passe en premier
+// Railway Hikari peut injecter de la compression WS — on la supprime ici
+server.on('upgrade', (req, socket, head) => {
+  delete req.headers['sec-websocket-extensions'];
+  req.headers['sec-websocket-extensions'] = '';
+});
+
 const wss    = new WebSocketServer({ server, perMessageDeflate: false });
 
 // Route Stripe raw body — DOIT être avant express.json()
@@ -73,16 +81,7 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 // ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
-let OAI_MODEL = process.env.OAI_MODEL || '';
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY_4 || process.env.ELEVENLABS_API_KEY || '';
-const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '39BbQfJTexvpWtOQZ4Xr'; // Amélie - FR
-const USE_ELEVENLABS_TTS  = process.env.USE_ELEVENLABS_TTS !== 'false'; // activé par défaut
-
-async function detectRealtimeModel() {
-  if (OAI_MODEL) {
-    console.log(`[MODEL] Modèle forcé via env: ${OAI_MODEL}`);
-    return;
-  }
+const OAI_MODEL = process.env.OAI_MODEL || 'gpt-4o-realtime-preview';
   try {
     const r = await fetch('https://api.openai.com/v1/models', {
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
@@ -602,27 +601,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v60', service: 'VoiceImmo WS', build: '20260624.1733' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v59-rsv1-fix2', service: 'VoiceImmo WS', build: '20260628.1100' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v60', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v59-rsv1-fix2', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v60' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v59-rsv1-fix2' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v60', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v59-rsv1-fix2', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -666,7 +665,7 @@ app.post('/twiml', (req, res) => {
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://ws-staging.voiceimmo.fr">
+    <Stream url="${baseUrl.replace('https://','wss://').replace('http://','ws://')}">
       <Parameter name="caller" value="${caller}" />
       <Parameter name="to" value="${to}" />
       <Parameter name="sid" value="${sid}" />
@@ -1055,13 +1054,19 @@ wss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          modalities: ['audio', 'text'],
+          type: 'realtime',
           instructions: buildPrompt(cfg || DEF_CFG(), callerNum),
-          voice: cfg?.voix || 'coral',
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+          audio: {
+            input: {
+              format: { type: 'audio/pcmu' },
+              transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+            },
+            output: {
+              format: { type: 'audio/pcmu' },
+              voice: (cfg || DEF_CFG())?.voix || 'coral'
+            }
+          }
         }
       }));
     });
@@ -1082,7 +1087,7 @@ wss.on('connection', (ws, req) => {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        if (USE_ELEVENLABS_TTS && ELEVENLABS_API_KEY) {
+        if (false /* ElevenLabs désactivé */) {
           // ElevenLabs TTS pour le message d'accueil
           console.log('[EL-TTS] Accueil via ElevenLabs Amélie...');
           sendElevenLabsAudio(ws, streamSid, accueil, ELEVENLABS_VOICE_ID).catch(e => {
@@ -1108,7 +1113,7 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
-        if (!USE_ELEVENLABS_TTS || !ELEVENLABS_API_KEY) {
+        if (true /* ElevenLabs désactivé */) {
           // Fallback : audio OpenAI direct
           if (ws.readyState === 1) {
             ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
@@ -1118,7 +1123,7 @@ wss.on('connection', (ws, req) => {
       }
 
       // ElevenLabs TTS : intercepter le transcript et générer l'audio via ElevenLabs
-      if (USE_ELEVENLABS_TTS && ELEVENLABS_API_KEY &&
+      if (false /* ElevenLabs désactivé */ &&
           m.type === 'response.audio_transcript.done' && m.transcript && streamSid) {
         const txt = m.transcript.trim();
         if (txt) {
@@ -1497,13 +1502,13 @@ hospWss.on('connection', (ws, req) => {
       oai.send(JSON.stringify({
         type: 'session.update',
         session: {
-          modalities: ['audio', 'text'],
           instructions: buildHospPrompt(cfg),
-          voice: cfg?.voix || 'coral',
           input_audio_format: 'g711_ulaw',
           output_audio_format: 'g711_ulaw',
           input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 }
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 },
+          voice: cfg?.voix || 'coral',
+          modalities: ['audio', 'text']
         }
       }));
     });
@@ -1680,4 +1685,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
 }
 
 detectRealtimeModel();
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v54-stripe sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v61 sur port ${PORT}`));
