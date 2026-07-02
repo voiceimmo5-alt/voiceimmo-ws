@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v59-rsv1-fix2', service: 'VoiceImmo WS', build: '20260628.1100' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v62-debug-logs', service: 'VoiceImmo WS', build: '20260702.1300' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v59-rsv1-fix2', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v62-debug-logs', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v59-rsv1-fix2' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v62-debug-logs' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v59-rsv1-fix2', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v62-debug-logs', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -887,6 +887,10 @@ async function saveAppel({ hotelId, hotelNumero, callSid, ctx, transcript, duree
 
 wss.on('connection', (ws, req) => {
   console.log('[WS] ✅ Connexion depuis', req.socket.remoteAddress);
+  console.log('[WS] Protocol négocié:', ws.protocol || '(aucun)', '| Headers upgrade:', JSON.stringify({ 'sec-websocket-protocol': req.headers['sec-websocket-protocol'], host: req.headers.host }));
+  const __startWatchdog = setTimeout(() => {
+    console.warn('[WS] ⚠️ Aucun événement "start" reçu 5s après connexion — Twilio n\'a peut-être pas ouvert le flux média correctement.');
+  }, 5000);
 
   let streamSid  = '';
   let callSid    = '';
@@ -1026,14 +1030,23 @@ wss.on('connection', (ws, req) => {
   }
 
   function connectOAI(callerNum) {
-    console.log('[OAI] Connexion OpenAI Realtime...');
+    console.log('[OAI] 🔌 connectOAI() appelé — model:', OAI_MODEL, '| callerNum:', callerNum, '| clé présente:', !!OPENAI_API_KEY, '| longueur clé:', (OPENAI_API_KEY||'').length);
     oai = new WebSocket(
       `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
       ['realtime'],
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
 
+    oai.on('unexpected-response', (req2, res2) => {
+      let body = '';
+      res2.on('data', (c) => { body += c; });
+      res2.on('end', () => {
+        console.error('[OAI] ❌ Unexpected HTTP response lors du handshake — status:', res2.statusCode, '| body:', body.slice(0, 500));
+      });
+    });
+
     oai.on('open', () => {
+      console.log('[OAI] ✅ WebSocket ouvert — envoi session.update');
       console.log('[OAI] Connecté → session.update');
       oai.send(JSON.stringify({
         type: 'session.update',
@@ -1174,8 +1187,8 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'error') console.error('[OAI] Erreur:', JSON.stringify(m.error));
     });
 
-    oai.on('error', (e) => console.error('[OAI] WS Error:', e.message));
-    oai.on('close', (code) => console.log('[OAI] Fermé, code:', code));
+    oai.on('error', (e) => console.error('[OAI] ❌ WS Error:', e.message, '| code:', e.code));
+    oai.on('close', (code, reason) => console.log('[OAI] Fermé — code:', code, '| reason:', reason ? reason.toString() : '(vide)'));
   }
 
   function parseLeadInfo(text) {
@@ -1234,9 +1247,11 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', async (data) => {
     let m;
-    try { m = JSON.parse(data); } catch(_) { return; }
+    try { m = JSON.parse(data); } catch(e) { console.warn('[WS] ⚠️ Message non-JSON reçu, taille=', data.length, 'erreur:', e.message); return; }
 
+    if (m.event !== 'media') console.log('[WS] Event reçu:', m.event);
     if (m.event === 'start') {
+      clearTimeout(__startWatchdog);
       streamSid    = m.start?.streamSid || '';
       const params = m.start?.customParameters || {};
       callSid      = params.sid    || params.CallSid || m.start?.callSid || '';
@@ -1291,8 +1306,8 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', async () => { console.log('[WS] Connexion fermée'); await flush(); });
-  ws.on('error', (e) => console.error('[WS] Erreur:', e.message));
+  ws.on('close', async (code, reason) => { clearTimeout(__startWatchdog); console.log('[WS] Connexion fermée — code:', code, '| reason:', reason ? reason.toString() : '(vide)'); await flush(); });
+  ws.on('error', (e) => console.error('[WS] ❌ Erreur:', e.message));
 });
 
 
