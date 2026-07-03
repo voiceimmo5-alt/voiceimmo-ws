@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v59-rsv1-fix2', service: 'VoiceImmo WS', build: '20260628.1100' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64-staging-fix-rsv1-dead-hospws', service: 'VoiceImmo WS', build: '20260703.2110' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v59-rsv1-fix2', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v64-staging-fix-rsv1-dead-hospws', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v59-rsv1-fix2' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64-staging-fix-rsv1-dead-hospws' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v59-rsv1-fix2', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v64-staging-fix-rsv1-dead-hospws', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -722,169 +722,6 @@ Numéro détecté : ${callerNum}`;
 
 
 // ─── WebSocket Handler ────────────────────────────────────────────────────────
-
-// ═══════════════════════════════════════════════════════════════
-// SVIA HOSPITALITY — Intégré sur /hosp WebSocket
-// ═══════════════════════════════════════════════════════════════
-const BASE44_HOSP_URL = 'https://fr-2758ee0c.base44.app/functions/hospitalityAuth';
-const hospConfigCache = new Map();
-const HOSP_CONFIG_TTL = 5 * 60 * 1000;
-
-async function fetchHotelConfig(numeroVoxzen) {
-  const cached = configCache.get(numeroVoxzen);
-  if (cached && Date.now() - cached.ts < CONFIG_TTL) return cached.config;
-
-  try {
-    const res = await fetch(BASE44_HOSP_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ action: 'get_config', numero_voxzen: numeroVoxzen }),
-      signal:  AbortSignal.timeout(8000)
-    });
-    const data = await res.json();
-    if (data.success) {
-      configCache.set(numeroVoxzen, { config: data, ts: Date.now() });
-      console.log(`[CFG] ✅ Config chargée pour ${numeroVoxzen} → ${data.nom_hotel}`);
-      return data;
-    }
-  } catch(e) {
-    console.error('[CFG] ❌ Erreur fetch config:', e.message);
-  }
-
-  // Config par défaut si hôtel non trouvé
-  return {
-    hotel_id: '',
-    nom_hotel: 'Hôtel Voxzen',
-    langue: 'fr',
-    voix: 'coral',
-    instructions_ia: '',
-    services_actifs: ['chambre', 'restau', 'accueil', 'service'],
-    pms_type: '',
-    destinataires_email: [],
-  };
-}
-function buildHospPrompt(cfg) {
-  const services = cfg.services_actifs || [];
-  const servicesList = services.map(s => {
-    const labels = {
-      chambre:       '- Réservation ou modification de chambre',
-      confirmation:  '- Confirmation de réservation existante',
-      restau:        '- Réservation restaurant ou room service',
-      bar:           '- Commande bar ou boissons',
-      accueil:       '- Questions générales, check-in/check-out',
-      cles:          '- Accès chambre, clés, badges',
-      spa:           '- Réservation spa, bien-être',
-      housekeeping:  '- Service de ménage, linge, serviettes',
-      transport:     '- Taxi, navette, voiturier',
-      facturation:   '- Facture, paiement, questions tarifaires',
-      conciergerie:  '- Conseils locaux, restaurants, activités',
-      evenements:    '- Salles de réunion, séminaires, événements',
-      service:       '- Service en chambre, demandes diverses',
-    };
-    return labels[s] || `- ${s}`;
-  }).join('\n');
-
-  const customInstr = cfg.instructions_ia?.trim()
-    ? `\n\n📋 INSTRUCTIONS SPÉCIFIQUES DE L'HÔTEL :\n${cfg.instructions_ia}`
-    : '';
-
-  return `Tu es SOFIA, l'assistante vocale intelligente de ${cfg.nom_hotel}.
-Tu réponds UNIQUEMENT en français, avec une voix chaleureuse, professionnelle et élégante.
-Tu es disponible 24h/24, 7j/7.
-
-🏨 TON RÔLE : Prendre en charge les demandes des clients de l'hôtel par téléphone.
-Tu peux aider pour :
-${servicesList}
-
-📞 SCRIPT D'APPEL :
-1. Accueille chaleureusement le client avec "Bonjour, ${cfg.nom_hotel}, Sofia à votre service."
-2. Identifie son prénom et son numéro de chambre si pertinent.
-3. Comprends précisément sa demande.
-4. Traite la demande ou transmets-la au service approprié.
-5. Confirme l'action prise et rassure le client.
-6. Conclus avec "Je vous souhaite une excellente journée / soirée, au revoir."
-
-📌 EXTRACTION AUTOMATIQUE :
-À chaque appel, tu DOIS identifier et structurer ces informations dans le transcript :
-HOSP_DATA: NOM=[Prénom Nom], CHAMBRE=[numéro], DEMANDE=[type: chambre/restau/bar/service/facturation/autre], DETAIL=[résumé en 1 phrase], ACTION=[ce que tu as fait]
-
-⚠️ RÈGLES IMPORTANTES :
-- Ne jamais promettre quelque chose que tu ne peux pas garantir.
-- Pour les réservations de chambre : prendre nom, date d'arrivée, date de départ, nombre de personnes.
-- Pour le restaurant : prendre nom, heure, nombre de couverts.
-- Toujours rester courtois même face à une demande impossible.
-- Maximum 2 minutes par appel.
-- Si la demande dépasse tes capacités, proposer de transférer à la réception.${customInstr}`;
-}
-function parseHospData(text, ctx) {
-  // Format structuré HOSP_DATA
-  const m = text.match(/HOSP_DATA:\s*NOM=\[([^\]]*)\].*?CHAMBRE=\[([^\]]*)\].*?DEMANDE=\[([^\]]*)\].*?DETAIL=\[([^\]]*)\].*?ACTION=\[([^\]]*)\]/is);
-  if (m) {
-    const [, nom, chambre, demande, detail, action] = m;
-    if (nom && nom.toLowerCase() !== 'vide' && nom.trim()) ctx.nom_client = nom.trim();
-    if (chambre && chambre.toLowerCase() !== 'vide' && chambre.trim()) ctx.numero_chambre = chambre.trim();
-    if (demande && demande.toLowerCase() !== 'vide' && demande.trim()) ctx.type_demande = demande.trim().toLowerCase();
-    if (detail && detail.toLowerCase() !== 'vide' && detail.trim()) ctx.demande = detail.trim();
-    if (action && action.toLowerCase() !== 'vide' && action.trim()) ctx.action_effectuee = action.trim();
-    console.log('[PARSE] ✅ HOSP_DATA → nom:', ctx.nom_client, '| chambre:', ctx.numero_chambre, '| type:', ctx.type_demande);
-    return;
-  }
-
-  // Fallback : regex sur transcript libre
-  if (!ctx.nom_client || ctx.nom_client === 'Inconnu') {
-    const mNom = text.match(/(?:je m.appelle|mon nom est|je suis|c.est)\s+([A-ZÀ-Ÿa-zà-ÿ\-]+(?:\s+[A-ZÀ-Ÿa-zà-ÿ\-]+)+)/i);
-    if (mNom) ctx.nom_client = mNom[1].trim();
-  }
-  if (!ctx.numero_chambre) {
-    const mCh = text.match(/(?:chambre|room|suite)\s*(?:numéro|number|n°)?\s*(\d{1,4})/i);
-    if (mCh) ctx.numero_chambre = mCh[1];
-  }
-  if (!ctx.type_demande) {
-    if (/réserv|réserver|chambre|room/i.test(text)) ctx.type_demande = 'chambre';
-    else if (/restaurant|room.?service|manger|dîner|déjeuner/i.test(text)) ctx.type_demande = 'restau';
-    else if (/bar|boisson|boire|cocktail/i.test(text)) ctx.type_demande = 'bar';
-    else if (/ménage|serviette|linge|housekeeping/i.test(text)) ctx.type_demande = 'service';
-    else if (/facture|payer|montant|tarif|prix/i.test(text)) ctx.type_demande = 'facturation';
-    else if (/taxi|voiture|navette|transport/i.test(text)) ctx.type_demande = 'transport';
-    else if (/spa|massage|bien.être|sauna/i.test(text)) ctx.type_demande = 'spa';
-    else if (/annuler|annulation/i.test(text)) ctx.type_demande = 'annulation';
-    else ctx.type_demande = 'autre';
-  }
-}
-async function saveAppel({ hotelId, hotelNumero, callSid, ctx, transcript, dureeAppel }) {
-  try {
-    const payload = {
-      action:          'save_appel',
-      numero_voxzen:   hotelNumero,
-      call_sid:        callSid || '',
-      type_demande:    ctx.type_demande || 'autre',
-      nom_client:      ctx.nom_client || 'Inconnu',
-      telephone:       ctx.telephone || '',
-      numero_chambre:  ctx.numero_chambre || '',
-      demande:         ctx.demande || '',
-      resume_ia:       transcript.slice(-4).map(e => (e.r === 'a' ? 'Sofia: ' : 'Client: ') + e.t).join(' | '),
-      action_effectuee: ctx.action_effectuee || '',
-      langue_detectee:  ctx.langue || 'fr',
-      duree_appel:      dureeAppel || 0,
-    };
-
-    const res = await fetch(BASE44_HOSP_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-      signal:  AbortSignal.timeout(15000)
-    });
-    const data = await res.json();
-    if (data.success) {
-      console.log('[APPEL] ✅ Appel sauvegardé, id:', data.appel_id);
-    } else {
-      console.warn('[APPEL] ⚠️ Erreur save_appel:', JSON.stringify(data));
-    }
-  } catch(e) {
-    console.warn('[APPEL] ⚠️ Exception save_appel:', e.message);
-  }
-}
-
 wss.on('connection', (ws, req) => {
   console.log('[WS] ✅ Connexion depuis', req.socket.remoteAddress);
 
@@ -1311,25 +1148,6 @@ const PORT = process.env.PORT || 8080;
 // ─── Webhook Twilio — enregistrement disponible ─────────────────────────────
 
 // ─── Route TwiML Hospitality ─────────────────────────────────────────────────
-app.post('/twiml-hosp', (req, res) => {
-  const caller  = req.body.From    || req.body.Caller || '';
-  const to      = req.body.To      || req.body.Called || '';
-  const callSid = req.body.CallSid || '';
-  const baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
-  console.log(`[TWIML-HOSP] 🏨 Appel entrant → From:${caller} To:${to} Sid:${callSid}`);
-  res.set('Content-Type', 'text/xml');
-  res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="wss://ws-staging.voiceimmo.fr/hosp">
-      <Parameter name="caller" value="${caller}" />
-      <Parameter name="to"     value="${to}" />
-      <Parameter name="sid"    value="${callSid}" />
-      <Parameter name="mode"   value="hospitality" />
-    </Stream>
-  </Connect>
-</Response>`);
-});
 
 app.post('/recording-noop', (req, res) => {
   // Twilio appelle cette URL quand l'action <Record> se termine (avant Connect)
@@ -1427,155 +1245,6 @@ app.post('/send-otp', express.json(), (req, res) => {
 });
 
 
-// ─── WebSocket SVIA Hospitality (/hosp) ─────────────────────────────────────
-const hospWss = new WebSocketServer({ server, path: '/hosp', perMessageDeflate: false });
-
-hospWss.on('connection', (ws, req) => {
-  console.log('[HOSP-WS] ✅ Nouvelle connexion hospitality depuis', req.socket.remoteAddress);
-
-  let streamSid   = '';
-  let callSid     = '';
-  let oai         = null;
-  let ready       = false;
-  let queue       = [];
-  let transcript  = [];
-  let curAss      = '';
-  let cfg         = null;
-  let hotelNumero = '';
-  let saved       = false;
-  let accueilDone = false;
-  let callTimer   = null;
-  let hangingUp   = false;
-  let callStart   = Date.now();
-
-  let ctx = { nom_client:'Inconnu', telephone:'', numero_chambre:'', type_demande:'', demande:'', action_effectuee:'', langue:'fr' };
-
-  async function hangupTwilio(sid) {
-    if (!sid || !process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) return;
-    try {
-      const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-      const r = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${sid}.json`,
-        { method:'POST', headers:{'Authorization':`Basic ${auth}`,'Content-Type':'application/x-www-form-urlencoded'}, body:'Status=completed' }
-      );
-      console.log(`[HOSP-HANGUP] REST Twilio → HTTP ${r.status}`);
-    } catch(e) { console.warn('[HOSP-HANGUP] REST error:', e.message); }
-  }
-
-  function hangup() {
-    if (callTimer) { clearTimeout(callTimer); callTimer = null; }
-    if (oai && oai.readyState === WebSocket.OPEN) oai.close();
-    try { if (ws.readyState === ws.OPEN) ws.close(); } catch(_) {}
-  }
-
-  async function flush() {
-    if (saved) return; saved = true;
-    hangup();
-    const duree = Math.floor((Date.now() - callStart) / 1000);
-    await saveAppel({ hotelNumero, callSid, ctx, transcript, dureeAppel: duree });
-  }
-
-  function connectOAI(callerNum) {
-    oai = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
-      ['realtime'],
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
-    );
-
-    oai.on('open', () => {
-      oai.send(JSON.stringify({
-        type: 'session.update',
-        session: {
-          instructions: buildHospPrompt(cfg),
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 },
-          voice: cfg?.voix || 'coral',
-          modalities: ['audio', 'text']
-        }
-      }));
-    });
-
-    oai.on('message', async (data) => {
-      let m; try { m = JSON.parse(data); } catch(_) { return; }
-
-      if (m.type === 'session.updated' && !ready) {
-        ready = true;
-        for (const c of queue) oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
-        queue = [];
-        const accueil = `Bonjour, ${cfg?.nom_hotel || 'Hôtel'}, Sofia à votre service, comment puis-je vous aider ?`;
-        oai.send(JSON.stringify({ type: 'response.create', response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` } }));
-      }
-
-      if (m.type === 'response.output_audio.delta' && m.delta && streamSid && ws.readyState === 1) {
-        ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
-      }
-
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
-
-      async function handleSofiaTranscript(text) {
-        if (!text?.trim()) return;
-        const t = text.trim();
-        if (transcript.some(e => e.r === 'a' && e.t === t)) return;
-        transcript.push({ r: 'a', t });
-        console.log(`[SOFIA-HOSP] "${t.slice(0,100)}"`);
-        const finPhrases = /au revoir|bonne journée|bonne soirée|excellente journée|excellente soirée|excellente nuit/i;
-        if (finPhrases.test(t) && !hangingUp) {
-          hangingUp = true;
-          console.log('[HOSP-FIN] ✅ Phrase de fin → raccrochage dans 2s');
-          setTimeout(async () => { await hangupTwilio(callSid); hangup(); await flush(); }, 2000);
-        }
-      }
-
-      if (m.type === 'response.audio_transcript.done' && curAss) { await handleSofiaTranscript(curAss); curAss = ''; }
-      if (m.type === 'response.output_item.done' && m.item?.formatted?.transcript) { await handleSofiaTranscript(m.item.formatted.transcript); curAss = ''; }
-
-      if (m.type === 'response.done' && !accueilDone) {
-        accueilDone = true;
-        oai.send(JSON.stringify({ type: 'response.create', response: { instructions: 'Enchaîne immédiatement : demande le prénom du client et son numéro de chambre.' } }));
-      }
-
-      if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
-        transcript.push({ r: 'u', t: m.transcript });
-        console.log(`[USER-HOSP] "${m.transcript.slice(0,100)}"`);
-        parseHospData(m.transcript, ctx);
-      }
-
-      if (m.type === 'error') console.error('[HOSP-OAI] Erreur:', JSON.stringify(m.error));
-    });
-
-    oai.on('error', (e) => console.error('[HOSP-OAI] WS Error:', e.message));
-    oai.on('close', (code) => console.log('[HOSP-OAI] Fermé, code:', code));
-  }
-
-  ws.on('message', async (data) => {
-    let m; try { m = JSON.parse(data); } catch(_) { return; }
-
-    if (m.event === 'start') {
-      streamSid   = m.start?.streamSid || '';
-      const params = m.start?.customParameters || {};
-      callSid     = params.sid    || params.CallSid || m.start?.callSid || '';
-      const caller = params.caller || params.From   || m.start?.from   || '';
-      const to     = params.to    || params.To      || m.start?.to     || '';
-      console.log(`[HOSP-WS] START streamSid:${streamSid} | caller:${caller} | to:${to}`);
-      ctx.telephone = caller ? caller.replace(/^\+33/, '0').replace(/(\d{2})(?=\d)/g, '$1 ').trim() : 'Inconnu';
-      hotelNumero  = (to || '').replace(/\s/g, '');
-      fetchHotelConfig(hotelNumero).then(config => { cfg = config; connectOAI(ctx.telephone); });
-      callTimer = setTimeout(async () => { hangingUp = true; await hangupTwilio(callSid); hangup(); await flush(); }, 120000);
-    }
-
-    if (m.event === 'media' && m.media?.payload) {
-      if (!ready) queue.push(m.media.payload);
-      else if (oai && oai.readyState === WebSocket.OPEN) oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
-    }
-
-    if (m.event === 'stop') { if (!saved) await flush(); }
-  });
-
-  ws.on('close', async () => { if (!saved) await flush(); });
-  ws.on('error', (e) => console.error('[HOSP-WS] Erreur:', e.message));
-});
 
 
 // ─── TwiML pour ElevenLabs ConvAI (both_tracks) ──────────────────────────────
