@@ -1245,7 +1245,18 @@ app.post('/reload-config', express.json(), async (req, res) => {
 });
 
 // ─── Route OTP Admin ────────────────────────────────────────────────────────
+// Fix CORS 03/07/2026 : les dashboards admin.voxzen.io / admin-dev.voxzen.io appellent
+// cette route en cross-origin depuis le navigateur. Sans header CORS, le fetch()
+// était bloqué silencieusement par le navigateur (catch{} vide côté frontend) et
+// aucun email n'était jamais réellement envoyé malgré un statut 200 en test direct (curl).
+app.options('/send-otp', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.sendStatus(204);
+});
 app.post('/send-otp', express.json(), (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   const body = req.body || {};
   const to = 'admin@voxzen.io';  // Toujours forcer admin@voxzen.io
   const code = body.code;
