@@ -586,27 +586,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v66-staging-transport-tuning', service: 'VoiceImmo WS', build: '20260703.2235' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v67-staging-no-recap', service: 'VoiceImmo WS', build: '20260703.2239' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v66-staging-transport-tuning', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67-staging-no-recap', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v66-staging-transport-tuning' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v67-staging-no-recap' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v66-staging-transport-tuning', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v67-staging-no-recap', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -709,6 +709,7 @@ RÈGLES ABSOLUES :
   4. Budget approximatif
   5. Référence du bien si disponible
   6. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
+- Ne récapitule JAMAIS les informations collectées à voix haute (pas de "donc c'est bien Monsieur X, pour un achat à..."), dis directement la phrase de conclusion
 - Après collecte complète : "Merci [Prénom], un agent va vous rappeler très rapidement. Au revoir !"
 
 AGENTS ET ZONES :
@@ -734,6 +735,7 @@ RÈGLES ABSOLUES :
   4. Dates de séjour ou nombre de nuits si pertinent
   5. Numéro de réservation si disponible
   6. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
+- Ne récapitule JAMAIS les informations collectées à voix haute, dis directement la phrase de conclusion
 - Après collecte complète : "Merci [Prénom], nous revenons vers vous très rapidement. Bonne journée !"
 
 Site web : ${c.site_internet || ''}
@@ -767,6 +769,7 @@ RÈGLES ABSOLUES :
   5. Date souhaitée
   6. Numéro de commande ou de bon de transport si l'appel concerne un suivi ou une réclamation
   7. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
+- Ne récapitule JAMAIS les informations collectées à voix haute, dis directement la phrase de conclusion
 - Après collecte complète : "Merci [Prénom], notre équipe exploitation revient vers vous très rapidement. Bonne journée !"
 
 Site web : ${c.site_internet || ''}
@@ -792,8 +795,8 @@ function buildPrompt(c, callerNum) {
       const mention = getRecordingMention(c.voix);
       prompt = mention + prompt;
     }
-    // Toujours injecter le bloc de collecte structurée adapté au modèle métier
-    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\n${getDonneesBlock(modele)}`;
+    // NOTE : plus d'injection de bloc "DONNEES:" à prononcer à voix haute (générait un récap audible non désiré).
+    // L'extraction du lead se fait uniquement via parseLeadInfo() sur le transcript de l'appelant (regex fallback).
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| modele:', modele, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
@@ -801,7 +804,8 @@ function buildPrompt(c, callerNum) {
   const builder = SKELETON_BUILDERS[modele] || buildPromptImmo;
   console.log('[PROMPT] ⚠️ Squelette générique utilisé pour', c.nom_agence, '| modele:', modele);
   let prompt = builder(c, callerNum);
-  prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\n${getDonneesBlock(modele)}`;
+  // NOTE : plus d'injection de bloc "DONNEES:" à prononcer à voix haute (générait un récap audible non désiré).
+  // L'extraction du lead se fait uniquement via parseLeadInfo() sur le transcript de l'appelant (regex fallback).
   return prompt;
 }
 
@@ -1422,4 +1426,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v66-staging-transport-tuning sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v67-staging-no-recap sur port ${PORT}`));
