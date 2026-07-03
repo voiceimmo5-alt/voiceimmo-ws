@@ -170,6 +170,7 @@ function mapClientToConfig(c) {
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
     instructions_ia:      c.instructions_ia || null,
+    modele_metier:        c.modele_metier || fallback.modele_metier || 'IMMO',
     agents_arr,
     destinataires_email:  dest,
     enregistrement_actif: c.enregistrement_actif === true,
@@ -585,27 +586,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64-staging-fix-rsv1-dead-hospws', service: 'VoiceImmo WS', build: '20260703.2110' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v65-staging-multi-vertical', service: 'VoiceImmo WS', build: '20260703.2142' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v64-staging-fix-rsv1-dead-hospws', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v65-staging-multi-vertical', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64-staging-fix-rsv1-dead-hospws' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v65-staging-multi-vertical' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v64-staging-fix-rsv1-dead-hospws', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v65-staging-multi-vertical', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -677,25 +678,22 @@ function injectRecordingMention(messageAccueil, voix) {
   return accueilNettoye + '. ' + mention.trim();
 }
 
-// ─── Prompt Sophie ────────────────────────────────────────────────────────────
-function buildPrompt(c, callerNum) {
-  // Priorité 1 : instructions_ia personnalisées depuis la base de données
-  if (c.instructions_ia && c.instructions_ia.trim()) {
-    let prompt = c.instructions_ia
-      .replace(/\{\{CALLER\}\}/g, callerNum)
-      .replace(/\{\{NUM\}\}/g, callerNum);
-    // Injecter mention légale si enregistrement activé
-    if (c.enregistrement_actif) {
-      const mention = getRecordingMention(c.voix);
-      prompt = mention + prompt;
-    }
-    // Toujours injecter le bloc de collecte structurée
-    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
-    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
-    return prompt;
-  }
-  // Priorité 2 : prompt générique fallback
-  console.log('[PROMPT] ⚠️ Fallback prompt générique pour', c.nom_agence);
+// ─── Blocs de collecte structurée par modèle métier ──────────────────────────
+// NOTE : on réutilise volontairement les MÊMES clés (NOM/BESOIN/VILLE/PRIX/REF)
+// pour tous les modèles métier — seul le SENS contextuel change. Ça permet de
+// garder le même parseur de leads (parseLeadInfo) sans toucher au schéma Lead.
+const DONNEES_BLOCKS = {
+  IMMO: `DONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`,
+  HOSPITALITY: `DONNEES: NOM=[prénom et nom complet], BESOIN=[réservation/information séjour/service en chambre/réclamation], VILLE=[numéro de chambre ou "réception" si non applicable], PRIX=[dates de séjour ou nombre de nuits, vide sinon], REF=[numéro de réservation ou vide]`,
+  TRANSPORT_LOGISTIQUE: `DONNEES: NOM=[prénom et nom complet + société si donnée], BESOIN=[devis transport/enlèvement-collecte/livraison/suivi de commande/réclamation], VILLE=[ville ou adresse de départ - ville ou adresse d'arrivée], PRIX=[poids/volume/nombre de palettes ou budget estimé, vide sinon], REF=[numéro de commande ou de bon de transport, vide sinon]`
+};
+
+function getDonneesBlock(modeleMetier) {
+  return DONNEES_BLOCKS[modeleMetier] || DONNEES_BLOCKS.IMMO;
+}
+
+// ─── Squelette IMMO (défaut historique) ──────────────────────────────────────
+function buildPromptImmo(c, callerNum) {
   const agentsStr = (c.agents_arr || []).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
   const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
   return `${recordMention}Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
@@ -718,6 +716,90 @@ ${agentsStr}
 
 Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
 Numéro détecté : ${callerNum}`;
+}
+
+// ─── Squelette HOSPITALITY (générique, réutilisable pour tout établissement) ─
+function buildPromptHospitality(c, callerNum) {
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+  return `${recordMention}Tu es l'assistante vocale de ${c.nom_agence}.
+LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
+
+RÈGLES ABSOLUES :
+- Tu es chaleureuse, professionnelle, et orientée service client
+- Tu ne donnes jamais de prix fermes non confirmés — tu proposes un rappel de l'équipe pour les devis/réservations complexes
+- Tu collectes les informations dans cet ordre :
+  1. Prénom et nom de l'appelant
+  2. Nature de la demande (réservation, information séjour, service en chambre, réclamation)
+  3. Numéro de chambre si applicable
+  4. Dates de séjour ou nombre de nuits si pertinent
+  5. Numéro de réservation si disponible
+  6. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
+- Après collecte complète : "Merci [Prénom], nous revenons vers vous très rapidement. Bonne journée !"
+
+Site web : ${c.site_internet || ''}
+Numéro détecté : ${callerNum}`;
+}
+
+// ─── Squelette TRANSPORT & LOGISTIQUE (générique) ────────────────────────────
+function buildPromptTransport(c, callerNum) {
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+  return `${recordMention}Tu es l'assistante vocale de ${c.nom_agence}, spécialiste du transport et de la logistique.
+LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
+
+RÈGLES ABSOLUES :
+- Tu es efficace, directe et rassurante — les appelants sont souvent des professionnels pressés (transporteurs, expéditeurs, clients en attente de livraison)
+- Tu ne donnes jamais de tarif ferme au téléphone — tu proposes systématiquement un rappel sous 2h pour les devis
+- Tu identifies dès le début la nature de l'appel parmi :
+  1. Demande de devis transport (marchandise, poids/volume, palettes, départ/arrivée, date souhaitée)
+  2. Enlèvement / collecte à programmer
+  3. Livraison à programmer ou à confirmer
+  4. Suivi d'une commande / d'un colis déjà en cours (demander le numéro de commande ou bon de transport)
+  5. Réclamation (retard, colis endommagé, litige) — reste posée et rassurante, ne présente jamais d'excuses juridiquement engageantes
+  6. Urgence transporteur (incident sur la route, besoin d'un contact immédiat) — dans ce cas uniquement, indique que tu transmets en priorité absolue
+- Tu collectes ensuite systématiquement :
+  1. Prénom, nom et société de l'appelant
+  2. Nature du besoin (voir liste ci-dessus)
+  3. Ville/adresse de départ et ville/adresse d'arrivée si pertinent
+  4. Poids, volume ou nombre de palettes si c'est un devis ou un enlèvement
+  5. Date souhaitée
+  6. Numéro de commande ou de bon de transport si l'appel concerne un suivi ou une réclamation
+  7. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
+- Après collecte complète : "Merci [Prénom], notre équipe exploitation revient vers vous très rapidement. Bonne journée !"
+
+Site web : ${c.site_internet || ''}
+Numéro détecté : ${callerNum}`;
+}
+
+const SKELETON_BUILDERS = {
+  IMMO: buildPromptImmo,
+  HOSPITALITY: buildPromptHospitality,
+  TRANSPORT_LOGISTIQUE: buildPromptTransport
+};
+
+// ─── Prompt Sophie (dispatch multi-modèles métier) ───────────────────────────
+function buildPrompt(c, callerNum) {
+  const modele = c.modele_metier || 'IMMO';
+  // Priorité 1 : instructions_ia personnalisées depuis la base de données
+  if (c.instructions_ia && c.instructions_ia.trim()) {
+    let prompt = c.instructions_ia
+      .replace(/\{\{CALLER\}\}/g, callerNum)
+      .replace(/\{\{NUM\}\}/g, callerNum);
+    // Injecter mention légale si enregistrement activé
+    if (c.enregistrement_actif) {
+      const mention = getRecordingMention(c.voix);
+      prompt = mention + prompt;
+    }
+    // Toujours injecter le bloc de collecte structurée adapté au modèle métier
+    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\n${getDonneesBlock(modele)}`;
+    console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| modele:', modele, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
+    return prompt;
+  }
+  // Priorité 2 : squelette générique selon le modèle métier sélectionné
+  const builder = SKELETON_BUILDERS[modele] || buildPromptImmo;
+  console.log('[PROMPT] ⚠️ Squelette générique utilisé pour', c.nom_agence, '| modele:', modele);
+  let prompt = builder(c, callerNum);
+  prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\n${getDonneesBlock(modele)}`;
+  return prompt;
 }
 
 
@@ -1337,4 +1419,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v61 sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v65-staging-multi-vertical sur port ${PORT}`));
