@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.9-fix-hangup-delay', service: 'VoiceImmo WS', build: '20260707.1051' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.0-fix-donnees-regex', service: 'VoiceImmo WS', build: '20260707.1053' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.9-fix-hangup-delay', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v64.0-fix-donnees-regex', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.9-fix-hangup-delay' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.0-fix-donnees-regex' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.9-fix-hangup-delay', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v64.0-fix-donnees-regex', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -980,7 +980,7 @@ wss.on('connection', (ws, req) => {
         // on annule IMMÉDIATEMENT la génération pour empêcher tout ajout après "au revoir".
         if (!hangingUp && finPhrases.test(curAss)) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → response.cancel (anti-récap) + raccrochage dans 4.5s');
+          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → response.cancel (anti-récap) + raccrochage dans 5.5s');
           if (oai && oai.readyState === WebSocket.OPEN) {
             oai.send(JSON.stringify({ type: 'response.cancel' }));
           }
@@ -988,7 +988,7 @@ wss.on('connection', (ws, req) => {
             await hangupTwilio(callSid);
             hangup();
             await flush();
-          }, 4500);
+          }, 5500);
         }
       }
 
@@ -1003,12 +1003,12 @@ wss.on('connection', (ws, req) => {
         // Fallback : si jamais la détection en streaming (delta) n'a pas déclenché, on la retente ici sur le texte complet
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 4.5s');
+          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 5.5s');
           setTimeout(async () => {
             await hangupTwilio(callSid);
             hangup();
             await flush();
-          }, 4500);
+          }, 5500);
         }
       }
 
@@ -1050,16 +1050,18 @@ wss.on('connection', (ws, req) => {
   }
 
   function parseLeadInfo(text) {
-    // PRIORITÉ 1 : Format structuré DONNEES: NOM=[...], BESOIN=[...], etc.
-    const mData = text.match(/DONNEES:\s*NOM=\[([^\]]+)\].*?BESOIN=\[([^\]]+)\].*?VILLE=\[([^\]]+)\].*?PRIX=\[([^\]]*)\].*?REF=\[([^\]]*)\]/is);
+    // PRIORITÉ 1 : Format structuré DONNEES: NOM=..., BESOIN=..., etc.
+    // Le modèle n'écrit PAS les crochets litéraux du template (NOM=Christophe, pas NOM=[Christophe]) —
+    // la regex accepte donc les 2 formats (avec ou sans crochets), séparateur virgule ou saut de ligne.
+    const mData = text.match(/DONNEES:\s*NOM=\[?([^,\]\n]+)\]?\s*,\s*BESOIN=\[?([^,\]\n]+)\]?\s*,\s*VILLE=\[?([^,\]\n]*)\]?\s*,\s*PRIX=\[?([^,\]\n]*)\]?\s*,\s*REF=\[?([^,\]\n]*)\]?/is);
     if (mData) {
       const [, nom, besoin, ville, prix, ref] = mData;
-      if (nom && nom.toLowerCase() !== 'vide' && nom.trim()) lead.nom = nom.trim();
-      if (besoin && besoin.toLowerCase() !== 'vide' && besoin.trim()) lead.besoin = besoin.trim();
-      if (ville && ville.toLowerCase() !== 'vide' && ville.trim()) lead.ville = ville.trim();
-      if (prix && prix.toLowerCase() !== 'vide' && prix.trim()) lead.prix = prix.trim();
-      if (ref && ref.toLowerCase() !== 'vide' && ref.trim()) lead.ref = ref.trim();
-      console.log('[PARSE] ✅ Format structuré détecté → nom:', lead.nom, '| besoin:', lead.besoin, '| ville:', lead.ville);
+      if (nom && nom.trim() && nom.trim().toLowerCase() !== 'vide') lead.nom = nom.trim();
+      if (besoin && besoin.trim() && besoin.trim().toLowerCase() !== 'vide') lead.besoin = besoin.trim();
+      if (ville && ville.trim() && ville.trim().toLowerCase() !== 'vide') lead.ville = ville.trim();
+      if (prix && prix.trim() && prix.trim().toLowerCase() !== 'vide') lead.prix = prix.trim();
+      if (ref && ref.trim() && ref.trim().toLowerCase() !== 'vide') lead.ref = ref.trim();
+      console.log('[PARSE] ✅ Format structuré détecté → nom:', lead.nom, '| besoin:', lead.besoin, '| ville:', lead.ville, '| prix:', lead.prix, '| ref:', lead.ref);
       return; // Format structuré trouvé, pas besoin des regex fragiles
     }
     // PRIORITÉ 2 : Regex sur transcript libre (fallback)
