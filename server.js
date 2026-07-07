@@ -105,7 +105,7 @@ const CONFIGS_FALLBACK = {
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
     voix:                'coral',
     site_internet:       'https://www.leone-immobilier.fr',
-    message_accueil:     "VOICEIMMO, bonjour ! Comment puis-je vous aider ? Vente ou achat ?",
+    message_accueil:     "Bonjour et bienvenue chez Leone Immobilier ! Comment puis-je vous aider aujourd'hui ? Vous souhaitez vendre, acheter, ou louer ?",
     instructions_ia:     null,
     agents_arr: [
       { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'givors, irigny, st genis laval, corbas, oullins, pierre-benite, charly' },
@@ -264,11 +264,11 @@ async function sendEmail(lead, cfg, transcript, recordingUrl) {
       + '<div style="padding:24px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">'
       + '<table style="width:100%;border-collapse:collapse">'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Nom</td><td style="padding:8px">' + (lead.nom||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:' + (lead.telephone||'').replace(/\s/g,'') + '" style="color:#4f46e5;font-weight:700;text-decoration:none;font-size:16px">' + (lead.telephone||'N/A') + '</a></td></tr>'
+      + '<tr><td style="padding:8px;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:' + (lead.tel||'').replace(/\s/g,'') + '" style="color:#4f46e5;font-weight:700;text-decoration:none;font-size:16px">' + (lead.tel||'N/A') + '</a></td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Besoin</td><td style="padding:8px">' + (lead.besoin||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;font-weight:bold">Ville</td><td style="padding:8px">' + (lead.ville||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Prix</td><td style="padding:8px">' + (lead.prix||'N/A') + '</td></tr>'
-      + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.reference||'N/A') + '</td></tr>'
+      + '<tr><td style="padding:8px;font-weight:bold">Référence</td><td style="padding:8px">' + (lead.ref||'N/A') + '</td></tr>'
       + '<tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Agent</td><td style="padding:8px">' + agentLabel + '</td></tr>'
       + '</table>'
       + (recordingUrl ? '<p style="margin-top:20px;color:#6b7280;font-size:13px">&#127897; Enregistrement de l\'appel en pi&egrave;ce jointe.</p>' : '')
@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.2-wait-for-response', service: 'VoiceImmo WS', build: '20260706.0900' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.3-fix-email-fields', service: 'VoiceImmo WS', build: '20260707.0834' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.2-wait-for-response', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v63.3-fix-email-fields', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.2-wait-for-response' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.3-fix-email-fields' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.2-wait-for-response', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v63.3-fix-email-fields', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -702,17 +702,18 @@ function buildPrompt(c, callerNum) {
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
+- Ton ton est chaleureux, avenant et souriant — tu parles comme une personne accueillante, pas comme un robot froid. Utilise des formulations naturelles et sympathiques. Ton objectif est que l'appelant vive une expérience fluide et agréable, à l'écoute et sans jamais le brusquer.
 - Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
 - Tu ne donnes pas de conseils juridiques ou financiers
 - N'INVENTE JAMAIS d'information. Si tu n'as pas clairement entendu ou compris ce que dit l'appelant (son coupé, bruit de fond, silence, voix pas claire), NE DEVINE PAS un nom, un besoin ou une réponse : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends sa réponse.
-- Ta toute première question après l'accueil est simplement : bien attendre la réponse de l'appelant à "vente ou achat". Ne remercie JAMAIS et n'invente JAMAIS de prénom avant que l'appelant ait réellement répondu à une question.
-- Une fois que l'appelant a répondu à "vente ou achat", tu collectes ensuite les informations dans cet ordre :
+- Ta toute première question après l'accueil est simplement : bien attendre la réponse de l'appelant à "vente, achat ou location". Ne remercie JAMAIS et n'invente JAMAIS de prénom avant que l'appelant ait réellement répondu à une question.
+- Une fois que l'appelant a répondu à "vente, achat ou location", tu collectes ensuite les informations dans cet ordre :
   1. Prénom et nom de l'appelant
   2. Ville / secteur du bien
   3. Budget approximatif
   4. Référence du bien si disponible
   5. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
-- Après collecte complète UNIQUEMENT (toutes les infos ci-dessus réellement obtenues de la bouche de l'appelant) : "Merci [Prénom], un agent va vous rappeler très rapidement. Au revoir !"
+- DÈS QUE l'appelant a confirmé (oui/non/correction) le numéro de rappel à l'étape 5, tu dis IMMÉDIATEMENT et UNIQUEMENT la phrase de clôture suivante, sans rien ajouter d'autre, sans récapitulatif : "Merci [Prénom], un agent va vous recontacter sous 24 heures. Je vous souhaite une excellente journée, au revoir !"
 
 AGENTS ET ZONES :
 ${agentsStr}
