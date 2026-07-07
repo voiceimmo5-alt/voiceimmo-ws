@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.4-block-auto-response-after-close', service: 'VoiceImmo WS', build: '20260707.1225' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.5-exact-opening-phrase', service: 'VoiceImmo WS', build: '20260707.1506' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v64.4-block-auto-response-after-close', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v64.5-exact-opening-phrase', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.4-block-auto-response-after-close' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.5-exact-opening-phrase' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v64.4-block-auto-response-after-close', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v64.5-exact-opening-phrase', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1080,7 +1080,7 @@ wss.on('connection', (ws, req) => {
         console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture du déroulement');
         oai.send(JSON.stringify({
           type: 'response.create',
-          response: { instructions: 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas et ne dis pas à nouveau bonjour. N\'ajoute AUCUNE formule de transition du type "d\'accord" / "je vais vous aider" — enchaîne DIRECTEMENT et SANS AUCUN mot de liaison sur la question du déroulement : demande simplement si c\'est pour un achat, une vente, une location, ou une estimation. Une seule phrase courte, puis attends réellement la réponse de l\'appelant — ne réponds jamais à sa place.' }
+          response: { instructions: 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas et ne dis pas à nouveau bonjour. Dis EXACTEMENT et UNIQUEMENT cette phrase, mot pour mot, sans rien changer ni ajouter : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?". N\'ajoute AUCUNE formule de transition avant ("d\'accord", "je vais vous aider", etc.) et ne reformule pas la phrase à ta manière. Puis attends réellement la réponse de l\'appelant — ne réponds jamais à sa place.' }
         }));
       }
 
