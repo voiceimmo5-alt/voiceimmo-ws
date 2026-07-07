@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.2-audio-not-cut-off', service: 'VoiceImmo WS', build: '20260707.1155' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.4-block-auto-response-after-close', service: 'VoiceImmo WS', build: '20260707.1225' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v64.2-audio-not-cut-off', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v64.4-block-auto-response-after-close', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.2-audio-not-cut-off' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.4-block-auto-response-after-close' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v64.2-audio-not-cut-off', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v64.4-block-auto-response-after-close', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -743,6 +743,7 @@ wss.on('connection', (ws, req) => {
   let transcript = [];
   let curAss     = '';
   let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
+  let lastQuestion = null; // derniere question posee par Sophie (ville/prix/ref/nom) pour capture brute si reponse en un mot
   let cfg        = null;
   let saved      = false;
   let accueilDone = false;
@@ -995,6 +996,13 @@ wss.on('connection', (ws, req) => {
         if (!hangingUp && finPhrases.test(curAss)) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de clôture détectée en streaming → grâce de 5s (laisse l\'audio de clôture se terminer) avant cancel éventuel');
+          // Empêche le server_vad d'auto-déclencher une NOUVELLE réponse (ex: bruit de fond après le
+          // "au revoir") pendant qu'on referme l'appel — root cause du "0.5s de récap" entendu juste
+          // avant la coupure : une réponse parasite démarrait après la clôture et se faisait couper net
+          // par notre hangup programmé, au lieu de ne jamais démarrer.
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'session.update', session: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 900, create_response: false } } }));
+          }
           cancelGraceTimer = setTimeout(() => {
             cancelGraceTimer = null;
             console.log('[FIN] ⏱️ Grâce écoulée, réponse toujours active → response.cancel (récap probable) + raccrochage dans 1.5s');
@@ -1010,14 +1018,34 @@ wss.on('connection', (ws, req) => {
       async function handleSophieTranscript(text) {
         if (!text || !text.trim()) return;
         const t = text.trim();
-        // Éviter les doublons
+        // Eviter les doublons
         if (transcript.some(e => e.r === 'a' && e.t === t)) return;
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
+
+        // Sophie comprend souvent le nom correctement meme quand la transcription de l'utilisateur
+        // le rate (ex: bruit, debit rapide) -- on utilise ses propres confirmations comme signal fiable.
+        if (!lead.nom || lead.nom === 'Inconnu') {
+          const mDonc = t.match(/\bdonc\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,})\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,})\b/);
+          const mMerciFull = t.match(/\bMerci\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,})\s+([A-ZÀ-Ÿ][a-zà-ÿ\-]{2,})\b/);
+          if (mDonc) lead.nom = `${mDonc[1]} ${mDonc[2]}`;
+          else if (mMerciFull) lead.nom = `${mMerciFull[1]} ${mMerciFull[2]}`;
+        }
+
+        // Detecte la question que Sophie vient de poser, pour permettre une capture brute de la
+        // reponse suivante si l'appelant repond en un seul mot sans preposition (ex: "Avion.").
+        if (/secteur|ville|où se trouve|où se situe/i.test(t))       lastQuestion = 'ville';
+        else if (/budget|prix|combien|valeur approximative/i.test(t)) lastQuestion = 'prix';
+        else if (/référence/i.test(t))                                lastQuestion = 'ref';
+        else if (/prénom|comment vous appelez|nom de famille|votre nom/i.test(t)) lastQuestion = 'nom';
+        else if (finPhrases.test(t)) lastQuestion = null;
         // Fallback : si jamais la détection en streaming (delta) n'a pas déclenché, on la retente ici sur le texte complet
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 7s (laisse jouer l\'audio complet)');
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'session.update', session: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 900, create_response: false } } }));
+          }
           scheduleHangup(7000);
           return;
         }
@@ -1122,6 +1150,24 @@ wss.on('connection', (ws, req) => {
     if (!lead.prix) {
       const m = text.match(/(\d[\d\s\.]*(?:euros?|€|k€|000\b))/i);
       if (m) lead.prix = m[1];
+    }
+
+    // Capture brute de secours : si Sophie vient de poser une question précise (ville/prix/ref) et que
+    // l'appelant répond en un seul mot SANS préposition ("Avion.", "Bordeaux"), les regex ci-dessus ne
+    // matchent rien. On prend alors directement la réponse brute (nettoyée) comme valeur du champ attendu.
+    const brut = text.replace(/[\.!\?,;]+\s*$/, '').trim();
+    const exclusBrut = /^(oui|non|allo|allô|bonjour|bonsoir|merci|d.accord|voilà|hum|euh|pardon)$/i;
+    if (lastQuestion === 'ville' && !lead.ville && brut && brut.length >= 3 && !exclusBrut.test(brut)) {
+      lead.ville = brut;
+      lastQuestion = null;
+    } else if (lastQuestion === 'prix' && !lead.prix && brut && /\d/.test(brut)) {
+      lead.prix = brut;
+      lastQuestion = null;
+    } else if (lastQuestion === 'ref' && !lead.ref && brut && !exclusBrut.test(brut)) {
+      lead.ref = brut.replace(/^(la\s+)?référence\s*(de bien|du bien)?\s*(est|c.est)?\s*/i, '').trim() || brut;
+      lastQuestion = null;
+    } else if ((lead.ville && lastQuestion === 'ville') || (lead.prix && lastQuestion === 'prix') || (lead.ref && lastQuestion === 'ref')) {
+      lastQuestion = null; // déjà rempli par une regex plus précise ci-dessus, on efface l'attente
     }
   }
 
