@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.1-smooth-chain', service: 'VoiceImmo WS', build: '20260707.1125' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.2-audio-not-cut-off', service: 'VoiceImmo WS', build: '20260707.1155' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v64.1-smooth-chain', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v64.2-audio-not-cut-off', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.1-smooth-chain' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.2-audio-not-cut-off' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v64.1-smooth-chain', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v64.2-audio-not-cut-off', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -749,7 +749,18 @@ wss.on('connection', (ws, req) => {
   let callTimer  = null;
 
   let hangingUp = false; // garde-fou anti-double-raccrochage
+  let cancelGraceTimer = null; // timer de grâce avant cancel éventuel (laisse l'audio de clôture finir de se générer)
+  let hangupTimerSet = false;  // garde-fou anti-double-raccrochage programmé
   const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
+  function scheduleHangup(delayMs) {
+    if (hangupTimerSet) return;
+    hangupTimerSet = true;
+    setTimeout(async () => {
+      await hangupTwilio(callSid);
+      hangup();
+      await flush();
+    }, delayMs);
+  }
 
   async function hangupTwilio(sid) {
     if (!sid) return;
@@ -976,19 +987,22 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'response.output_audio_transcript.delta' && m.delta) {
         curAss += m.delta;
-        // Anti-récapitulatif : dès que la phrase de clôture apparaît en streaming,
-        // on annule IMMÉDIATEMENT la génération pour empêcher tout ajout après "au revoir".
+        // Anti-récapitulatif MOINS INTRUSIF : le texte (delta) arrive bien plus vite que l'audio ne se
+        // génère/joue réellement sur la ligne. Annuler IMMÉDIATEMENT ici coupait l'audio de la phrase de
+        // clôture elle-même avant qu'elle ait fini de jouer. On laisse donc une grâce pour que la réponse
+        // se termine naturellement (cas normal, pas de récap) ; on ne cancel QUE si elle continue au-delà
+        // de cette grâce (signe d'un vrai récapitulatif qui déborde).
         if (!hangingUp && finPhrases.test(curAss)) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → response.cancel (anti-récap) + raccrochage dans 5.5s');
-          if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'response.cancel' }));
-          }
-          setTimeout(async () => {
-            await hangupTwilio(callSid);
-            hangup();
-            await flush();
-          }, 5500);
+          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → grâce de 5s (laisse l\'audio de clôture se terminer) avant cancel éventuel');
+          cancelGraceTimer = setTimeout(() => {
+            cancelGraceTimer = null;
+            console.log('[FIN] ⏱️ Grâce écoulée, réponse toujours active → response.cancel (récap probable) + raccrochage dans 1.5s');
+            if (oai && oai.readyState === WebSocket.OPEN) {
+              oai.send(JSON.stringify({ type: 'response.cancel' }));
+            }
+            scheduleHangup(1500);
+          }, 5000);
         }
       }
 
@@ -1003,12 +1017,18 @@ wss.on('connection', (ws, req) => {
         // Fallback : si jamais la détection en streaming (delta) n'a pas déclenché, on la retente ici sur le texte complet
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 5.5s');
-          setTimeout(async () => {
-            await hangupTwilio(callSid);
-            hangup();
-            await flush();
-          }, 5500);
+          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 7s (laisse jouer l\'audio complet)');
+          scheduleHangup(7000);
+          return;
+        }
+        // La réponse contenant la clôture s'est terminée NATURELLEMENT avant la fin de la grâce → pas de
+        // récap, pas besoin de cancel. On raccroche après un délai généreux pour laisser le temps à tout
+        // l'audio déjà généré (mais pas encore fini de jouer sur la ligne) de se terminer.
+        if (hangingUp && cancelGraceTimer) {
+          clearTimeout(cancelGraceTimer);
+          cancelGraceTimer = null;
+          console.log('[FIN] ✅ Réponse de clôture terminée naturellement (pas de récap) → raccrochage dans 7s (laisse jouer l\'audio complet)');
+          scheduleHangup(7000);
         }
       }
 
