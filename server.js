@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.4-anti-recap-stream-cancel', service: 'VoiceImmo WS', build: '20260707.0840' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.5-timer5min-antihalluc', service: 'VoiceImmo WS', build: '20260707.0903' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.4-anti-recap-stream-cancel', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v63.5-timer5min-antihalluc', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.4-anti-recap-stream-cancel' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.5-timer5min-antihalluc' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.4-anti-recap-stream-cancel', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v63.5-timer5min-antihalluc', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -689,6 +689,8 @@ function buildPrompt(c, callerNum) {
       const mention = getRecordingMention(c.voix);
       prompt = mention + prompt;
     }
+    // Toujours injecter le garde-fou anti-hallucination (même pour les instructions personnalisées)
+    prompt += `\n\n## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)\nN'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVINE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/ville/besoin/prix/référence) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.`;
     // Toujours injecter le bloc de collecte structurée
     prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
@@ -1115,12 +1117,12 @@ wss.on('connection', (ws, req) => {
       cfg = getConfig(to || '');
       connectOAI(lead.tel);
       callTimer = setTimeout(async () => {
-        console.log('[TIMER] 2min → raccrochage automatique');
+        console.log('[TIMER] 5min → raccrochage automatique');
         hangingUp = true;
         await hangupTwilio(callSid);
         hangup();
         await flush();
-      }, 120000);
+      }, 300000);
 
       // Déclencher l'enregistrement via API REST Twilio (pas via TwiML pour ne pas couper le stream)
       if (doRecord && callSid && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
