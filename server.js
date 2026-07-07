@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.3-fix-email-fields', service: 'VoiceImmo WS', build: '20260707.0834' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.4-anti-recap-stream-cancel', service: 'VoiceImmo WS', build: '20260707.0840' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.3-fix-email-fields', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v63.4-anti-recap-stream-cancel', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.3-fix-email-fields' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.4-anti-recap-stream-cancel' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.3-fix-email-fields', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v63.4-anti-recap-stream-cancel', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -747,6 +747,7 @@ wss.on('connection', (ws, req) => {
   let callTimer  = null;
 
   let hangingUp = false; // garde-fou anti-double-raccrochage
+  const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
 
   async function hangupTwilio(sid) {
     if (!sid) return;
@@ -971,7 +972,23 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.audio_transcript.delta' && m.delta) {
+        curAss += m.delta;
+        // Anti-récapitulatif : dès que la phrase de clôture apparaît en streaming,
+        // on annule IMMÉDIATEMENT la génération pour empêcher tout ajout après "au revoir".
+        if (!hangingUp && finPhrases.test(curAss)) {
+          hangingUp = true;
+          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → response.cancel (anti-récap) + raccrochage dans 2s');
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'response.cancel' }));
+          }
+          setTimeout(async () => {
+            await hangupTwilio(callSid);
+            hangup();
+            await flush();
+          }, 2000);
+        }
+      }
 
       // Détection phrase de fin + sauvegarde transcript Sophie
       async function handleSophieTranscript(text) {
@@ -981,17 +998,13 @@ wss.on('connection', (ws, req) => {
         if (transcript.some(e => e.r === 'a' && e.t === t)) return;
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
-        // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i;
+        // Fallback : si jamais la détection en streaming (delta) n'a pas déclenché, on la retente ici sur le texte complet
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
+          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 2s');
           setTimeout(async () => {
-            // 1. API REST Twilio EN PREMIER → raccroche le téléphone physiquement
             await hangupTwilio(callSid);
-            // 2. Fermer les connexions WebSocket
             hangup();
-            // 3. Sauvegarder le lead + envoyer email
             await flush();
           }, 2000);
         }
