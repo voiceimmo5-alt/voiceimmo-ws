@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.7-mention-avant-accueil', service: 'VoiceImmo WS', build: '20260707.0945' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.8-scenario-strict', service: 'VoiceImmo WS', build: '20260707.1022' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.7-mention-avant-accueil', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v63.8-scenario-strict', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.7-mention-avant-accueil' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.8-scenario-strict' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.7-mention-avant-accueil', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v63.8-scenario-strict', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -672,9 +672,9 @@ function getRecordingMention(voix) {
 
 function injectRecordingMention(messageAccueil, voix) {
   const mention = getRecordingMention(voix);
-  // Mention placée AVANT l'accueil — au tout début de l'appel (conforme RGPD),
-  // pour que le silence d'attente de réponse tombe après la VRAIE question, pas après la mention.
-  return mention.trim() + ' ' + messageAccueil.trim();
+  // Ordre STRICT validé par CR : 1) accueil  2) mention enregistrement  3) elle enchaine sur le déroulement
+  const accueilNettoye = messageAccueil.trimEnd().replace(/[.,!?]+$/, '');
+  return accueilNettoye + '. ' + mention.trim();
 }
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
@@ -1024,12 +1024,16 @@ wss.on('connection', (ws, req) => {
         if (!curAss) curAss = ''; // reset si déjà capturé
       }
 
-      // Après le message d'accueil → on NE force plus d'enchaînement immédiat.
-      // On attend la vraie réponse de l'appelant (server_vad déclenche automatiquement
-      // la réponse suivante du modèle une fois que l'appelant a fini de parler).
+      // Après le message d'accueil + mention enregistrement → on enchaîne IMMÉDIATEMENT
+      // (sans attendre l'appelant) sur la première question du déroulement (identifier le besoin).
+      // C'est SEULEMENT après cette vraie question qu'on attend la réponse de l'appelant.
       if (m.type === 'response.done' && !accueilDone) {
         accueilDone = true;
-        console.log('[OAI] Accueil terminé → en attente de la réponse de l\'appelant');
+        console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture du déroulement');
+        oai.send(JSON.stringify({
+          type: 'response.create',
+          response: { instructions: 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas. Enchaîne maintenant directement avec la première étape du déroulement : pose UNE SEULE question courte pour identifier le besoin de l\'appelant (achat, vente, location, ou estimation). Puis attends réellement sa réponse avant de continuer — ne réponds jamais à sa place.' }
+        }));
       }
 
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
