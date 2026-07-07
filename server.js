@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.6-fix-ga-event-names', service: 'VoiceImmo WS', build: '20260707.0914' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.7-mention-avant-accueil', service: 'VoiceImmo WS', build: '20260707.0945' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.6-fix-ga-event-names', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v63.7-mention-avant-accueil', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.6-fix-ga-event-names' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.7-mention-avant-accueil' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.6-fix-ga-event-names', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v63.7-mention-avant-accueil', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -672,9 +672,9 @@ function getRecordingMention(voix) {
 
 function injectRecordingMention(messageAccueil, voix) {
   const mention = getRecordingMention(voix);
-  // Ajouter la mention APRÈS l'accueil complet — ne jamais couper la phrase d'accueil
-  const accueilNettoye = messageAccueil.trimEnd().replace(/[.,!?]+$/, '');
-  return accueilNettoye + '. ' + mention.trim();
+  // Mention placée AVANT l'accueil — au tout début de l'appel (conforme RGPD),
+  // pour que le silence d'attente de réponse tombe après la VRAIE question, pas après la mention.
+  return mention.trim() + ' ' + messageAccueil.trim();
 }
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
