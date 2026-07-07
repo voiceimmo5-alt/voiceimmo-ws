@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.8-scenario-strict', service: 'VoiceImmo WS', build: '20260707.1022' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v63.9-fix-hangup-delay', service: 'VoiceImmo WS', build: '20260707.1051' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v63.8-scenario-strict', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v63.9-fix-hangup-delay', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.8-scenario-strict' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v63.9-fix-hangup-delay' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v63.8-scenario-strict', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v63.9-fix-hangup-delay', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -980,7 +980,7 @@ wss.on('connection', (ws, req) => {
         // on annule IMMÉDIATEMENT la génération pour empêcher tout ajout après "au revoir".
         if (!hangingUp && finPhrases.test(curAss)) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → response.cancel (anti-récap) + raccrochage dans 2s');
+          console.log('[FIN] ✅ Phrase de clôture détectée en streaming → response.cancel (anti-récap) + raccrochage dans 4.5s');
           if (oai && oai.readyState === WebSocket.OPEN) {
             oai.send(JSON.stringify({ type: 'response.cancel' }));
           }
@@ -988,7 +988,7 @@ wss.on('connection', (ws, req) => {
             await hangupTwilio(callSid);
             hangup();
             await flush();
-          }, 2000);
+          }, 4500);
         }
       }
 
@@ -1003,12 +1003,12 @@ wss.on('connection', (ws, req) => {
         // Fallback : si jamais la détection en streaming (delta) n'a pas déclenché, on la retente ici sur le texte complet
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 2s');
+          console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 4.5s');
           setTimeout(async () => {
             await hangupTwilio(callSid);
             hangup();
             await flush();
-          }, 2000);
+          }, 4500);
         }
       }
 
