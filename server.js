@@ -585,27 +585,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.10-revert-recap-timer', service: 'VoiceImmo WS', build: '20260709.0848' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.11-no-spoken-recap', service: 'VoiceImmo WS', build: '20260709.0902' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v64.10-revert-recap-timer', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v64.11-no-spoken-recap', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.10-revert-recap-timer' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.11-no-spoken-recap' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v64.10-revert-recap-timer', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v64.11-no-spoken-recap', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -691,8 +691,12 @@ function buildPrompt(c, callerNum) {
     }
     // Toujours injecter le garde-fou anti-hallucination (même pour les instructions personnalisées)
     prompt += `\n\n## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)\nN'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVINE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/ville/besoin/prix/référence) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.`;
-    // Toujours injecter le bloc de collecte structurée
-    prompt += `\n\n## COLLECTE DONNÉES (OBLIGATOIRE)\nQuand tu as collecté les infos, avant de raccrocher, envoie une ligne structurée EXACTEMENT ainsi :\nDONNEES: NOM=[prénom et nom complet], BESOIN=[achat/vente/location/estimation], VILLE=[ville], PRIX=[prix ou vide], REF=[référence ou vide]`;
+    // NOTE (09/07/2026) : suppression du bloc "DONNEES:" à prononcer à voix haute — le modèle le disait
+    // réellement à l'oral (API Realtime = tout texte généré devient audio), ce qui créait un récap audible
+    // non désiré juste après "au revoir". Ce bloc n'était de toute façon pas utilisé pour l'extraction du
+    // lead (parseLeadInfo() ne l'analyse que sur le transcript de L'APPELANT, jamais sur celui de Sophie) —
+    // l'extraction reste assurée par le fallback regex + les confirmations de Sophie captées ailleurs.
+    prompt += `\n\n## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)\nNe récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un achat à...", pas de ligne technique du type "DONNEES:"). Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
