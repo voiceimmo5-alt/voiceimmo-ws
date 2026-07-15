@@ -586,27 +586,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.0-staging-shimmer-voice', service: 'VoiceImmo WS', build: '20260715.2139' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.2-staging-force-hangup', service: 'VoiceImmo WS', build: '20260715.2158' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.0-staging-shimmer-voice', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.2-staging-force-hangup', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.0-staging-shimmer-voice' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.2-staging-force-hangup' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.0-staging-shimmer-voice', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.2-staging-force-hangup', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -830,8 +830,11 @@ wss.on('connection', (ws, req) => {
   let hangingUp = false; // garde-fou anti-double-raccrochage
 
   async function hangupTwilio(sid) {
-    if (!sid) return;
-    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) return;
+    if (!sid) { console.warn('[HANGUP] Pas de callSid disponible'); return; }
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+      console.warn('[HANGUP] ⚠️ TWILIO creds manquantes — raccrochage via ws.close() uniquement');
+      return; // hangup() sera appelé juste après dans le setTimeout
+    }
     try {
       const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
       const r = await fetch(
@@ -852,8 +855,10 @@ wss.on('connection', (ws, req) => {
   function hangup() {
     if (callTimer) { clearTimeout(callTimer); callTimer = null; }
     if (oai && oai.readyState === WebSocket.OPEN) oai.close();
-    // Fermer aussi le WebSocket Twilio Media Stream pour libérer la connexion
-    try { if (ws.readyState === ws.OPEN) ws.close(); } catch(_) {}
+    // Fermer le WebSocket Twilio Media Stream — ws.terminate() est brutal mais garanti
+    try { if (ws.readyState === ws.OPEN) { ws.close(); } } catch(_) {}
+    try { ws.terminate(); } catch(_) {}
+    console.log('[HANGUP] ws.terminate() → Twilio doit raccrocher');
   }
 
 
@@ -1424,4 +1429,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.0-staging-shimmer-voice sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.2-staging-force-hangup sur port ${PORT}`));
