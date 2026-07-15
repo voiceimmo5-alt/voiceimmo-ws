@@ -103,7 +103,7 @@ const CONFIGS_FALLBACK = {
   '+33939245959': {
     nom_agence:          'LEONE IMMOBILIER',
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
-    voix:                'coral',
+    voix:                'shimmer',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour et bienvenue chez Leone Immobilier, comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -117,7 +117,7 @@ const CONFIGS_FALLBACK = {
   '+33939247019': {
     nom_agence:          'LEONE IMMOBILIER (STAGING)',
     client_db_id:        '6a057fa03ad6f7b2ebf4b79e',
-    voix:                'coral',
+    voix:                'shimmer',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour, ceci est le serveur de test Leone Immobilier. Comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -166,7 +166,7 @@ function mapClientToConfig(c) {
   return {
     nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
     client_db_id:         c.id || fallback.client_db_id,
-    voix:                 c.voix || fallback.voix || 'coral',
+    voix:                 c.voix || fallback.voix || 'shimmer',
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
     instructions_ia:      c.instructions_ia || null,
@@ -586,27 +586,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v67.1-staging-wait-for-response', service: 'VoiceImmo WS', build: '20260704.1131' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.0-staging-shimmer-voice', service: 'VoiceImmo WS', build: '20260715.2139' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.1-staging-wait-for-response', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.0-staging-shimmer-voice', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v67.1-staging-wait-for-response' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.0-staging-shimmer-voice' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v67.1-staging-wait-for-response', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.0-staging-shimmer-voice', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -974,7 +974,7 @@ wss.on('connection', (ws, req) => {
             },
             output: {
               format: { type: 'audio/pcmu' },
-              voice: (cfg || DEF_CFG())?.voix || 'coral'
+              voice: (cfg || DEF_CFG())?.voix || 'shimmer'
             }
           }
         }
@@ -1424,4 +1424,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v67.1-staging-wait-for-response sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.0-staging-shimmer-voice sur port ${PORT}`));
