@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.9-staging-no-mixing', service: 'VoiceImmo WS', build: '20260716.0617' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.10-script-ia-accueil', service: 'VoiceImmo WS', build: '20260716.0722' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.9-staging-no-mixing', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.10-script-ia-accueil', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.9-staging-no-mixing' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.10-script-ia-accueil' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.9-staging-no-mixing', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.10-script-ia-accueil', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1077,12 +1077,15 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
+        // Si instructions_ia personnalisées et message_accueil vide → laisser le script IA gérer l'accueil
+        const hasCustomScript = cfg?.instructions_ia && cfg.instructions_ia.trim();
+        const hasCustomAccueil = cfg?.message_accueil && cfg.message_accueil.trim();
+        let accueil = hasCustomAccueil ? cfg.message_accueil : (hasCustomScript ? null : DEF_CFG().message_accueil);
         // Injecter la mention RGPD si enregistrement actif
-        if (cfg?.enregistrement_actif) {
+        if (accueil && cfg?.enregistrement_actif) {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
-        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
+        console.log('[OAI] Session prête → accueil:', accueil ? accueil.slice(0, 80) : '(script IA — pas de message_accueil fixe)');
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
@@ -1105,10 +1108,19 @@ wss.on('connection', (ws, req) => {
             }));
           }, 2500);
         } else {
-          oai.send(JSON.stringify({
-            type: 'response.create',
-            response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
-          }));
+          if (accueil) {
+            // Message d'accueil fixe défini → le forcer
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
+            }));
+          } else {
+            // Pas de message_accueil → le script IA (system prompt) gère tout depuis le début
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: {}
+            }));
+          }
         }
       }
 
@@ -1519,4 +1531,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.9-staging-no-mixing sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.10-script-ia-accueil sur port ${PORT}`));
