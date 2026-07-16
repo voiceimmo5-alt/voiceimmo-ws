@@ -3,6 +3,54 @@ const http      = require('http');
 const express   = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
 
+
+// ─── Fond sonore PAD (chargé au démarrage, scope global) ────────────────────
+const _fs   = require('fs');
+const _path = require('path');
+let PAD_PCM = null;
+try {
+  const raw = _fs.readFileSync(_path.join(__dirname, 'voxzen_pad.wav'));
+  PAD_PCM = raw.slice(44); // Skip WAV header 44 bytes
+  console.log('[PAD] Fond sonore chargé : ' + Math.round(PAD_PCM.length/1024) + ' KB');
+} catch(e) {
+  console.warn('[PAD] voxzen_pad.wav introuvable — pas de fond sonore :', e.message);
+}
+
+function mixMulaw(src, pad, vol) {
+  vol = vol || 0.15;
+  const MULAW_BIAS = 33;
+  const mulaw2pcm = (u) => {
+    u = ~u & 0xFF;
+    const sign = u & 0x80;
+    const exp  = (u >> 4) & 0x07;
+    const mant = (u & 0x0F) + MULAW_BIAS;
+    let s = (mant << (exp + 1)) - MULAW_BIAS;
+    return sign ? -s : s;
+  };
+  const EXP_LUT = [0,132,396,924,1980,4092,8316,16764];
+  const pcm2mulaw = (s) => {
+    const CLIP = 32635;
+    const sign = (s < 0) ? 0x80 : 0;
+    if (s < 0) s = -s;
+    if (s > CLIP) s = CLIP;
+    s += MULAW_BIAS;
+    let exp = 7;
+    for (; exp >= 0 && s < EXP_LUT[exp]; exp--) {}
+    const mant = (s >> (exp + 1)) & 0x0F;
+    return (~(sign | (exp << 4) | mant)) & 0xFF;
+  };
+  const len = Math.min(src.length, pad.length);
+  const out = Buffer.alloc(len);
+  for (let i = 0; i < len; i++) {
+    let mixed = mulaw2pcm(src[i]) + Math.round(mulaw2pcm(pad[i]) * vol);
+    if (mixed >  32767) mixed =  32767;
+    if (mixed < -32768) mixed = -32768;
+    out[i] = pcm2mulaw(mixed);
+  }
+  return out;
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const app    = express();
 const server = http.createServer(app);
 
@@ -586,27 +634,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.5-staging-fix-baseurl', service: 'VoiceImmo WS', build: '20260715.2210' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.6-staging-pad-global', service: 'VoiceImmo WS', build: '20260716.0608' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.5-staging-fix-baseurl', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.6-staging-pad-global', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.5-staging-fix-baseurl' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.6-staging-pad-global' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.5-staging-fix-baseurl', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.6-staging-pad-global', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1475,4 +1523,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.5-staging-fix-baseurl sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.6-staging-pad-global sur port ${PORT}`));
