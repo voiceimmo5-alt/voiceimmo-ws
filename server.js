@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.7-staging-wav-parser', service: 'VoiceImmo WS', build: '20260716.0612' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.9-staging-no-mixing', service: 'VoiceImmo WS', build: '20260716.0617' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.7-staging-wav-parser', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.9-staging-no-mixing', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.7-staging-wav-parser' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.9-staging-no-mixing' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.7-staging-wav-parser', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.9-staging-no-mixing', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -723,6 +723,11 @@ app.post('/twiml', (req, res) => {
     </Stream>
   </Connect>
 </Response>`);
+/* NOTE : le fond sonore <Play loop="0"> n'est PAS compatible avec <Connect><Stream>
+   dans le même <Response> (Twilio exécute séquentiellement, pas en parallèle).
+   Approche correcte : Media Streams bi-directionnels avec audio injecté côté WS,
+   OU désactiver le fond sonore. Pour l'instant on supprime le fond sonore pour
+   préserver la qualité audio de Sophie. */
 });
 
 
@@ -1111,30 +1116,8 @@ wss.on('connection', (ws, req) => {
         if (true /* ElevenLabs désactivé */) {
           // Fallback : audio OpenAI direct (mixé avec le pad si disponible)
           if (ws.readyState === 1) {
-            let audioToSend = m.delta;
-            if (PAD_PCM && PAD_PCM.length > 0) {
-              try {
-                const src = Buffer.from(m.delta, 'base64');
-                const len = src.length;
-                // Extraire la portion du pad (avec boucle circulaire)
-                let padChunk;
-                if (padOffset + len <= PAD_PCM.length) {
-                  padChunk = PAD_PCM.slice(padOffset, padOffset + len);
-                  padOffset = (padOffset + len) % PAD_PCM.length;
-                } else {
-                  // Wrap around
-                  const part1 = PAD_PCM.slice(padOffset);
-                  const part2 = PAD_PCM.slice(0, len - part1.length);
-                  padChunk = Buffer.concat([part1, part2]);
-                  padOffset = len - part1.length;
-                }
-                const mixed = mixMulaw(src, padChunk, 0.15);
-                audioToSend = mixed.toString('base64');
-              } catch(_) {
-                audioToSend = m.delta; // fallback sans mix si erreur
-              }
-            }
-            ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: audioToSend } }));
+            // Audio OpenAI direct — pas de mixing (préserve la qualité mulaw 8kHz)
+            ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
           }
         }
         // Si ElevenLabs actif : on ignore l'audio OpenAI, on attend le transcript
@@ -1536,4 +1519,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.7-staging-wav-parser sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.9-staging-no-mixing sur port ${PORT}`));
