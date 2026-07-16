@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.11-accueil-then-script', service: 'VoiceImmo WS', build: '20260716.0730' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.12-auto-reload-on-call', service: 'VoiceImmo WS', build: '20260716.0737' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.11-accueil-then-script', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.12-auto-reload-on-call', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.11-accueil-then-script' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.12-auto-reload-on-call' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.11-accueil-then-script', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.12-auto-reload-on-call', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -693,11 +693,17 @@ app.get('/recording/:sid', async (req, res) => {
   }
 });
 
-app.post('/twiml', (req, res) => {
+app.post('/twiml', async (req, res) => {
   const caller = req.body.From   || req.body.Caller || '';
   const to     = req.body.To     || req.body.Called || '';
   const sid    = req.body.CallSid|| '';
   console.log(`[TWIML] From:${caller} To:${to} Sid:${sid}`);
+
+  // 🔄 Rechargement automatique de la config à chaque appel entrant
+  // → garantit que toute modif du dashboard (script IA, message_accueil, voix...)
+  //   est prise en compte immédiatement sans redémarrer le serveur
+  await refreshConfigs();
+
   // Fix : SERVER_BASE_URL peut pointer vers un mauvais domaine Railway — forcer le bon
   let baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
   if (baseUrl.includes('production-92c4') || baseUrl.includes('railway.app')) {
@@ -1510,4 +1516,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.11-accueil-then-script sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.12-auto-reload-on-call sur port ${PORT}`));
