@@ -10,8 +10,21 @@ const _path = require('path');
 let PAD_PCM = null;
 try {
   const raw = _fs.readFileSync(_path.join(__dirname, 'voxzen_pad.wav'));
-  PAD_PCM = raw.slice(44); // Skip WAV header 44 bytes
-  console.log('[PAD] Fond sonore chargé : ' + Math.round(PAD_PCM.length/1024) + ' KB');
+  // Parser le WAV proprement — le chunk 'data' n'est PAS toujours à l'offset 44
+  // (ffmpeg mulaw génère des chunks fmt(18)+fact+LIST avant data)
+  let wavOffset = 12; // skip RIFF header
+  let dataOffset = 44; // fallback si parsing échoue
+  while (wavOffset < raw.length - 8) {
+    const chunkId   = raw.slice(wavOffset, wavOffset + 4).toString('ascii');
+    const chunkSize = raw.readUInt32LE(wavOffset + 4);
+    if (chunkId === 'data') {
+      dataOffset = wavOffset + 8; // après l'entête du chunk (4 id + 4 size)
+      break;
+    }
+    wavOffset += 8 + chunkSize + (chunkSize % 2 !== 0 ? 1 : 0);
+  }
+  PAD_PCM = raw.slice(dataOffset);
+  console.log('[PAD] Fond sonore chargé : offset=' + dataOffset + ', ' + Math.round(PAD_PCM.length/1024) + ' KB, ' + (PAD_PCM.length/8000).toFixed(1) + 's');
 } catch(e) {
   console.warn('[PAD] voxzen_pad.wav introuvable — pas de fond sonore :', e.message);
 }
@@ -634,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.6-staging-pad-global', service: 'VoiceImmo WS', build: '20260716.0608' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.7-staging-wav-parser', service: 'VoiceImmo WS', build: '20260716.0612' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.6-staging-pad-global', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.7-staging-wav-parser', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.6-staging-pad-global' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.7-staging-wav-parser' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.6-staging-pad-global', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.7-staging-wav-parser', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1523,4 +1536,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.6-staging-pad-global sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.7-staging-wav-parser sur port ${PORT}`));
