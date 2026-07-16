@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.10-script-ia-accueil', service: 'VoiceImmo WS', build: '20260716.0722' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.11-accueil-then-script', service: 'VoiceImmo WS', build: '20260716.0730' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.10-script-ia-accueil', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v68.11-accueil-then-script', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.10-script-ia-accueil' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.11-accueil-then-script' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.10-script-ia-accueil', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v68.11-accueil-then-script', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -879,6 +879,11 @@ function buildPrompt(c, callerNum) {
       const mention = getRecordingMention(c.voix);
       prompt = mention + prompt;
     }
+    // Si un message_accueil est défini, il sera joué en premier par le serveur.
+    // On indique au modèle de ne PAS répéter l'accueil et de commencer directement à la 1ère vraie question.
+    if (c.message_accueil && c.message_accueil.trim()) {
+      prompt += '\n\n## IMPORTANT : Le message d\'accueil a déjà été dit par le système. Ne le répète jamais. Commence directement à la première étape du déroulement (identifier le besoin de l\'appelant).';
+    }
     // NOTE : plus d'injection de bloc "DONNEES:" à prononcer à voix haute (générait un récap audible non désiré).
     // L'extraction du lead se fait uniquement via parseLeadInfo() sur le transcript de l'appelant (regex fallback).
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| modele:', modele, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
@@ -1077,51 +1082,25 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        // Si instructions_ia personnalisées et message_accueil vide → laisser le script IA gérer l'accueil
-        const hasCustomScript = cfg?.instructions_ia && cfg.instructions_ia.trim();
-        const hasCustomAccueil = cfg?.message_accueil && cfg.message_accueil.trim();
-        let accueil = hasCustomAccueil ? cfg.message_accueil : (hasCustomScript ? null : DEF_CFG().message_accueil);
+        // message_accueil toujours joué en 1er. Si vide, fallback neutre (jamais une config tierce).
+        let accueil = (cfg?.message_accueil && cfg.message_accueil.trim())
+          ? cfg.message_accueil
+          : 'Bonjour, comment puis-je vous aider ?';
         // Injecter la mention RGPD si enregistrement actif
-        if (accueil && cfg?.enregistrement_actif) {
+        if (cfg?.enregistrement_actif) {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
-        console.log('[OAI] Session prête → accueil:', accueil ? accueil.slice(0, 80) : '(script IA — pas de message_accueil fixe)');
+        console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
         queue = [];
-        if (false /* ElevenLabs désactivé */) {
-          // ElevenLabs TTS pour le message d'accueil
-          console.log('[EL-TTS] Accueil via ElevenLabs Amélie...');
-          sendElevenLabsAudio(ws, streamSid, accueil, ELEVENLABS_VOICE_ID).catch(e => {
-            console.error('[EL-TTS] Fallback OpenAI:', e.message);
-            oai.send(JSON.stringify({
-              type: 'response.create',
-              response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
-            }));
-          });
-          // Demander à OpenAI de passer à l'étape 1 sans re-générer l'accueil
-          setTimeout(() => {
-            oai.send(JSON.stringify({
-              type: 'response.create',
-              response: { instructions: 'Le message d\'accueil a déjà été dit. Attends la réponse du client.' }
-            }));
-          }, 2500);
-        } else {
-          if (accueil) {
-            // Message d'accueil fixe défini → le forcer
-            oai.send(JSON.stringify({
-              type: 'response.create',
-              response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
-            }));
-          } else {
-            // Pas de message_accueil → le script IA (system prompt) gère tout depuis le début
-            oai.send(JSON.stringify({
-              type: 'response.create',
-              response: {}
-            }));
-          }
-        }
+        // Jouer le message d'accueil — le script IA prend le relais après
+        // (buildPrompt() injecte automatiquement 'ne répète pas l\'accueil')
+        oai.send(JSON.stringify({
+          type: 'response.create',
+          response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans jamais répéter : "${accueil}"` }
+        }));
       }
 
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
@@ -1531,4 +1510,4 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.10-script-ia-accueil sur port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.11-accueil-then-script sur port ${PORT}`));
