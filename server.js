@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v68.13-prompt-align-prod', service: 'VoiceImmo WS', build: '20260728.0700' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v69.0-pizzeria-vertical', service: 'VoiceImmo WS', build: '20260728.0700' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v68.13-prompt-align-prod', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v69.0-pizzeria-vertical', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v68.13-prompt-align-prod' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v69.0-pizzeria-vertical' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v68.13-prompt-align-prod', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v69.0-pizzeria-vertical', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -886,10 +886,147 @@ N'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est 
 Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un achat à...", pas de ligne technique du type "DONNEES:"). Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SQUELETTE PIZZERIA / RESTAURATION — Voxzen v1.0
+// Gère : commandes vocales, lecture de carte dynamique (chargée depuis la base),
+//        récapitulatif commande, confirmation livraison/sur-place, dispatch vers
+//        appareil connecté (imprimante cuisine / Raspberry Pi / webhook)
+// ─────────────────────────────────────────────────────────────────────────────
+function buildPromptPizzeria(c, callerNum) {
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+
+  // Construire la carte textuelle depuis le champ scraping_format
+  // Format attendu dans Client.instructions_ia OU Client.scraping_format :
+  //   CARTE: {"pizzas": [...], "boissons": [...], "desserts": [...]}
+  // Si vide → utilise une carte générique de démonstration
+  let carteText = '';
+  if (c.scraping_format && c.scraping_format.trim()) {
+    try {
+      const carte = JSON.parse(c.scraping_format);
+      const sections = [];
+      if (carte.pizzas && carte.pizzas.length) {
+        sections.push('PIZZAS DISPONIBLES :\n' + carte.pizzas.map(p =>
+          `  • ${p.nom} — ${p.description || ''} — ${p.prix_s ? p.prix_s+'€ (S) / ' : ''}${p.prix_m ? p.prix_m+'€ (M) / ' : ''}${p.prix_l ? p.prix_l+'€ (L)' : p.prix+'€'}`
+        ).join('\n'));
+      }
+      if (carte.boissons && carte.boissons.length) {
+        sections.push('BOISSONS :\n' + carte.boissons.map(b =>
+          `  • ${b.nom} — ${b.prix}€`
+        ).join('\n'));
+      }
+      if (carte.desserts && carte.desserts.length) {
+        sections.push('DESSERTS :\n' + carte.desserts.map(d =>
+          `  • ${d.nom} — ${d.prix}€`
+        ).join('\n'));
+      }
+      if (carte.options_supplementaires && carte.options_supplementaires.length) {
+        sections.push('OPTIONS / SUPPLÉMENTS :\n' + carte.options_supplementaires.map(o =>
+          `  • ${o.nom} — +${o.prix}€`
+        ).join('\n'));
+      }
+      carteText = sections.join('\n\n');
+    } catch(e) {
+      carteText = c.scraping_format; // fallback : texte brut si pas JSON valide
+    }
+  } else {
+    // Carte de démonstration générique
+    carteText = \`PIZZAS DISPONIBLES :
+  • Margherita — tomate, mozzarella, basilic — 9€ (S) / 13€ (M) / 17€ (L)
+  • 4 Fromages — mozzarella, gorgonzola, chèvre, parmesan — 11€ (S) / 15€ (M) / 19€ (L)
+  • Reine — tomate, mozzarella, jambon, champignons — 11€ (S) / 15€ (M) / 19€ (L)
+  • Napolitaine — tomate, mozzarella, anchois, câpres, olives — 12€ (S) / 16€ (M) / 20€ (L)
+  • Végétarienne — tomate, mozzarella, poivrons, courgette, aubergine — 12€ (S) / 16€ (M) / 20€ (L)
+  • Diavola — tomate, mozzarella, salami pimenté, piment — 12€ (S) / 16€ (M) / 20€ (L)
+
+BOISSONS :
+  • Eau minérale 50cl — 2€
+  • Coca-Cola 33cl — 2,50€
+  • Jus d'orange 25cl — 2€
+  • Bière artisanale 33cl — 4€
+
+DESSERTS :
+  • Tiramisu maison — 5€
+  • Panna cotta fruits rouges — 4,50€
+
+OPTIONS / SUPPLÉMENTS :
+  • Supplément fromage — +1,50€
+  • Supplément jambon — +1,50€
+  • Pâte sans gluten — +2€
+  • Livraison à domicile — +2,50€\`;
+  }
+
+  const horaires = c.horaires ? \`\nHoraires : \${c.horaires}\` : '';
+  const siteWeb  = c.site_internet ? \`\nSite web / commande en ligne : \${c.site_internet}\` : '';
+
+  return \`\${recordMention}Tu es l'assistante vocale de \${c.nom_agence || 'la pizzeria'}, une pizzeria artisanale.
+LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
+
+RÈGLES ABSOLUES :
+- IMPORTANT : le message d'accueil a déjà été prononcé automatiquement. Ne dis JAMAIS "Bonjour" à nouveau — enchaîne DIRECTEMENT sur la prise de commande.
+- Tu es chaleureuse, efficace et gourmande dans tes formulations — tu parles avec enthousiasme des pizzas !
+- Tu NE fais JAMAIS de récapitulatif vocal complet avant de raccrocher — seulement la phrase de clôture.
+- N'INVENTE JAMAIS un produit, un prix ou une disponibilité. Si tu ne trouves pas dans la carte ci-dessous, dis "Je ne trouve pas ce produit dans notre carte, voici ce que nous proposons..."
+- Si l'appelant demande quelque chose qui n'est pas sur la carte, propose la pizza la plus proche ou suggère une alternative.
+- Tu gères les commandes LIVRAISON et SUR PLACE (à préciser dès le début).
+- Minimum de commande pour la livraison : vérifie si configuré dans la carte, sinon considère 15€ minimum.
+
+─────────────────────────────────────────────────────────────
+CARTE DU JOUR :
+\${carteText}
+─────────────────────────────────────────────────────────────
+
+DÉROULEMENT DE LA COMMANDE (strict, dans cet ordre) :
+
+ÉTAPE 1 — TYPE DE COMMANDE
+  Demande : "C'est pour une livraison à domicile ou à emporter ?"
+  → Si livraison : demande l'adresse complète (numéro, rue, ville)
+  → Si sur place : demande "Pour combien de personnes et à quelle heure ?"
+  → Si commande téléphonique sans livraison ni sur-place : traite normalement
+
+ÉTAPE 2 — PRISE DE COMMANDE
+  Présente les grandes catégories disponibles : pizzas, boissons, desserts.
+  Pour chaque pizza commandée, confirme OBLIGATOIREMENT :
+    a) La pizza choisie (répète le nom)
+    b) La taille : petite (S) / moyenne (M) / grande (L) — demander si non précisé
+    c) Les suppléments souhaités (fromage, jambon, etc.)
+  Propose naturellement les boissons si l'appelant n'en a pas commandé.
+  Propose naturellement les desserts en fin de commande.
+
+ÉTAPE 3 — RÉCAPITULATIF COMMANDE (UNIQUEMENT VOCAL, CONCIS)
+  Énonce UNE SEULE FOIS la commande sous forme très courte :
+  "Donc j'ai bien : [liste courte] pour un total de [montant]€. C'est bien ça ?"
+  → Si l'appelant confirme → passer à l'étape 4
+  → Si l'appelant corrige → modifier et re-confirmer une seule fois
+
+ÉTAPE 4 — COORDONNÉES & CONFIRMATION
+  Collecte dans cet ordre :
+    1. Prénom et nom de l'appelant
+    2. Confirme le numéro de téléphone en lisant chiffre par chiffre : "\${callerNum}" — "C'est bien votre numéro ?"
+    3. Si livraison : confirme l'adresse complète
+  Annonce le temps de préparation estimé (utilise la valeur configurée ou 25-30 minutes par défaut).
+  Phrase de clôture obligatoire : "Merci [Prénom] ! Votre commande est bien enregistrée, elle sera prête dans [X] minutes. À très bientôt !"
+
+─────────────────────────────────────────────────────────────
+FORMAT DE SORTIE SILENCIEUX (NE JAMAIS PRONONCER À VOIX HAUTE) :
+Après la phrase de clôture, émets silencieusement en dernier token de ta réponse le bloc :
+COMMANDE: NOM=[nom client] | TEL=\${callerNum} | TYPE=[LIVRAISON/EMPORTER] | ADRESSE=[adresse si livraison] | ITEMS=[liste des pizzas+tailles+suppléments, boissons, desserts] | TOTAL=[montant total]€ | HEURE=[heure actuelle HH:MM]
+─────────────────────────────────────────────────────────────
+\${horaires}\${siteWeb}
+Numéro détecté : \${callerNum}
+
+## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)
+N'INVENTE JAMAIS un produit, un prix, une disponibilité ou une information. Si tu n'entends pas clairement, NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter ?" et attends.
+
+## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
+Après la phrase de clôture, tais-toi immédiatement. Pas de ligne technique "COMMANDE:" à voix haute.\`;
+}
+
 const SKELETON_BUILDERS = {
   IMMO: buildPromptImmo,
   HOSPITALITY: buildPromptHospitality,
-  TRANSPORT_LOGISTIQUE: buildPromptTransport
+  TRANSPORT_LOGISTIQUE: buildPromptTransport,
+  PIZZERIA: buildPromptPizzeria
 };
 
 // ─── Prompt Sophie (dispatch multi-modèles métier) ───────────────────────────
@@ -1048,7 +1185,40 @@ wss.on('connection', (ws, req) => {
     }
     hangup();
     const activeCfg = cfg || DEF_CFG();
-    await Promise.all([
+    // ── PIZZERIA : dispatch commande vers appareil connecté ──────────────────────
+    const activeCfgForPizza = cfg || DEF_CFG();
+    if (activeCfgForPizza.modele_metier === 'PIZZERIA') {
+      const allText = transcript.map(t => (t.text || t.t || '')).join(' ');
+      const cmd = parseCommandePizzeria(allText);
+      if (cmd && cmd.items) {
+        console.log('[PIZZERIA] 🍕 Commande détectée :', JSON.stringify(cmd));
+        const dispatchUrl = activeCfgForPizza.regles_dispatch;
+        if (dispatchUrl && dispatchUrl.startsWith('http')) {
+          try {
+            await fetch(dispatchUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                source:      'voxzen_voicebot',
+                restaurant:  activeCfgForPizza.nom_agence,
+                commande:    cmd,
+                timestamp:   new Date().toISOString()
+              })
+            });
+            console.log('[PIZZERIA] ✅ Commande dispatchée vers', dispatchUrl);
+          } catch(e) {
+            console.warn('[PIZZERIA] ⚠️ Dispatch échoué :', e.message);
+          }
+        } else {
+          console.log('[PIZZERIA] ℹ️ Pas de webhook configuré dans regles_dispatch — commande loguée uniquement');
+        }
+        // Enrichir le lead avec les détails commande pour l'email et la base
+        lead.besoin = 'Commande pizza : ' + cmd.items;
+        lead.notes  = 'TYPE=' + cmd.type + ' | ADRESSE=' + cmd.adresse + ' | TOTAL=' + cmd.total + '€ | HEURE=' + cmd.heure;
+      }
+    }
+
+        await Promise.all([
       (async () => {
         // Stocker l'email en attente — sera envoyé quand le recording arrive (ou timeout 45s)
         const sid = callSid;
@@ -1212,6 +1382,24 @@ wss.on('connection', (ws, req) => {
     oai.on('close', (code) => console.log('[OAI] Fermé, code:', code));
   }
 
+// ─── Parsing commande PIZZERIA depuis transcription ──────────────────────────
+function parseCommandePizzeria(transcript) {
+  // Cherche le bloc COMMANDE: émis silencieusement par le modèle en dernier token
+  const fullText = Array.isArray(transcript) ? transcript.join(' ') : transcript;
+  const m = fullText.match(/COMMANDE:\s*NOM=([^|]+)\|\s*TEL=([^|]+)\|\s*TYPE=([^|]+)\|\s*(?:ADRESSE=([^|]*)\|\s*)?ITEMS=([^|]+)\|\s*TOTAL=([^|]+)\|\s*HEURE=([^\n\r]+)/i);
+  if (!m) return null;
+  return {
+    nom:     (m[1]||'').trim(),
+    tel:     (m[2]||'').trim(),
+    type:    (m[3]||'').trim(),   // LIVRAISON ou EMPORTER
+    adresse: (m[4]||'').trim(),
+    items:   (m[5]||'').trim(),
+    total:   (m[6]||'').trim(),
+    heure:   (m[7]||'').trim()
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
   function parseLeadInfo(text) {
     // PRIORITÉ 1 : Format structuré DONNEES: NOM=[...], BESOIN=[...], etc.
     const mData = text.match(/DONNEES:\s*NOM=\[([^\]]+)\].*?BESOIN=\[([^\]]+)\].*?VILLE=\[([^\]]+)\].*?PRIX=\[([^\]]*)\].*?REF=\[([^\]]*)\]/is);
