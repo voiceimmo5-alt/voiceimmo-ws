@@ -586,27 +586,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v67.1-staging-wait-for-response', service: 'VoiceImmo WS', build: '20260704.1131' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v67.2-prompt-align-prod', service: 'VoiceImmo WS', build: '20260728.0701' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.1-staging-wait-for-response', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67.2-prompt-align-prod', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v67.1-staging-wait-for-response' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v67.2-prompt-align-prod' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v67.1-staging-wait-for-response', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v67.2-prompt-align-prod', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -700,6 +700,8 @@ function buildPromptImmo(c, callerNum) {
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
+- Ton ton est chaleureux, avenant et souriant — tu parles comme une personne accueillante, pas comme un robot froid. Utilise des formulations naturelles et sympathiques.
+- N'INVENTE JAMAIS d'information. Si tu n'as pas clairement entendu, NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter ?" et attends.
 - Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
 - Tu ne donnes pas de conseils juridiques ou financiers
 - Tu collectes les informations dans cet ordre :
@@ -716,7 +718,13 @@ AGENTS ET ZONES :
 ${agentsStr}
 
 Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
-Numéro détecté : ${callerNum}`;
+Numéro détecté : ${callerNum}
+
+## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)
+N'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVISE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/ville/besoin/prix/référence) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.
+
+## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)
+Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un achat à...", pas de ligne technique du type "DONNEES:"). Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
 }
 
 // ─── Squelette HOSPITALITY (générique, réutilisable pour tout établissement) ─
@@ -739,7 +747,13 @@ RÈGLES ABSOLUES :
 - Après collecte complète : "Merci [Prénom], nous revenons vers vous très rapidement. Bonne journée !"
 
 Site web : ${c.site_internet || ''}
-Numéro détecté : ${callerNum}`;
+Numéro détecté : ${callerNum}
+
+## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)
+N'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVISE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/ville/besoin/prix/référence) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.
+
+## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)
+Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un achat à...", pas de ligne technique du type "DONNEES:"). Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
 }
 
 // ─── Squelette TRANSPORT & LOGISTIQUE (générique) ────────────────────────────
@@ -773,7 +787,13 @@ RÈGLES ABSOLUES :
 - Après collecte complète : "Merci [Prénom], notre équipe exploitation revient vers vous très rapidement. Bonne journée !"
 
 Site web : ${c.site_internet || ''}
-Numéro détecté : ${callerNum}`;
+Numéro détecté : ${callerNum}
+
+## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)
+N'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVISE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/ville/besoin/prix/référence) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.
+
+## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)
+Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un achat à...", pas de ligne technique du type "DONNEES:"). Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
 }
 
 const SKELETON_BUILDERS = {
@@ -797,6 +817,8 @@ function buildPrompt(c, callerNum) {
     }
     // NOTE : plus d'injection de bloc "DONNEES:" à prononcer à voix haute (générait un récap audible non désiré).
     // L'extraction du lead se fait uniquement via parseLeadInfo() sur le transcript de l'appelant (regex fallback).
+    prompt += `\n\n## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)\nN'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVISE PAS : dis simplement \"Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?\" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/ville/besoin/prix/référence) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.`;
+    prompt += `\n\n## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)\nNe récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de \"donc c'est bien M./Mme X, pour un achat à...\", pas de ligne technique du type \"DONNEES:\"). Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
     console.log('[PROMPT] ✅ Instructions IA personnalisées utilisées pour', c.nom_agence, '| modele:', modele, '| caller:', callerNum, '| enregistrement:', c.enregistrement_actif||false);
     return prompt;
   }
