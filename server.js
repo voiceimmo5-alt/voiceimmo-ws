@@ -931,7 +931,7 @@ function buildPromptPizzeria(c, callerNum) {
     }
   } else {
     // Carte de démonstration générique
-    carteText = \`PIZZAS DISPONIBLES :
+    carteText = `PIZZAS DISPONIBLES :
   • Margherita — tomate, mozzarella, basilic — 9€ (S) / 13€ (M) / 17€ (L)
   • 4 Fromages — mozzarella, gorgonzola, chèvre, parmesan — 11€ (S) / 15€ (M) / 19€ (L)
   • Reine — tomate, mozzarella, jambon, champignons — 11€ (S) / 15€ (M) / 19€ (L)
@@ -953,13 +953,13 @@ OPTIONS / SUPPLÉMENTS :
   • Supplément fromage — +1,50€
   • Supplément jambon — +1,50€
   • Pâte sans gluten — +2€
-  • Livraison à domicile — +2,50€\`;
+  • Livraison à domicile — +2,50€`;
   }
 
-  const horaires = c.horaires ? \`\nHoraires : \${c.horaires}\` : '';
-  const siteWeb  = c.site_internet ? \`\nSite web / commande en ligne : \${c.site_internet}\` : '';
+  const horaires = c.horaires ? `\nHoraires : \${c.horaires}` : '';
+  const siteWeb  = c.site_internet ? `\nSite web / commande en ligne : \${c.site_internet}` : '';
 
-  return \`\${recordMention}Tu es l'assistante vocale de \${c.nom_agence || 'la pizzeria'}, une pizzeria artisanale.
+  return `\${recordMention}Tu es l'assistante vocale de \${c.nom_agence || 'la pizzeria'}, une pizzeria artisanale.
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
@@ -1019,7 +1019,7 @@ Numéro détecté : \${callerNum}
 N'INVENTE JAMAIS un produit, un prix, une disponibilité ou une information. Si tu n'entends pas clairement, NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter ?" et attends.
 
 ## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
-Après la phrase de clôture, tais-toi immédiatement. Pas de ligne technique "COMMANDE:" à voix haute.\`;
+Après la phrase de clôture, tais-toi immédiatement. Pas de ligne technique "COMMANDE:" à voix haute.`;
 }
 
 const SKELETON_BUILDERS = {
