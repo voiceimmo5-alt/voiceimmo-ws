@@ -190,7 +190,7 @@ async function sendEmail(lead, cfg) {
 }
 
 // ─── Endpoints HTTP ───────────────────────────────────────────────────────
-app.get('/', (req, res) => res.json({ status: 'ok', version: 'v26-ga-api', service: 'VoiceImmo WS' }));
+app.get('/', (req, res) => res.json({ status: 'ok', version: 'v27-prompt-align-prod', service: 'VoiceImmo WS' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -200,14 +200,14 @@ app.get('/debug', async (req, res) => {
     const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
     oaiOk = r.ok;
   } catch(_) {}
-  res.json({ version: 'v26-ga-api', hasOAI: hasKey, oaiOk, node: process.version });
+  res.json({ version: 'v27-prompt-align-prod', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
   const n = parseInt(req.query.n || '50');
   const since = parseInt(req.query.since || '0');
   const logs = LOG_BUFFER.filter(l => l.ts > since).slice(-n);
-  res.json({ logs, serverTime: Date.now(), version: 'v26-ga-api' });
+  res.json({ logs, serverTime: Date.now(), version: 'v27-prompt-align-prod' });
 });
 
 app.get('/stats', async (req, res) => {
@@ -218,7 +218,7 @@ app.get('/stats', async (req, res) => {
   } catch(_) {}
   res.json({
     ok: true,
-    version: 'v26-ga-api',
+    version: 'v27-prompt-align-prod',
     uptime: Math.floor(process.uptime()),
     memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     oaiOk,
@@ -284,7 +284,7 @@ wss.on('connection', (ws, req) => {
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
     oai = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
       ['realtime'],
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`,  } }
     );
@@ -343,12 +343,12 @@ wss.on('connection', (ws, req) => {
       }
 
       // Transcription réponse Sophie
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
-      if (m.type === 'response.audio_transcript.done' && curAss) {
+      if (m.type === 'response.output_audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.output_audio_transcript.done' && curAss) {
         transcript.push({ r: 'a', t: curAss });
         console.log(`[IA] "${curAss.slice(0, 100)}"`);
         // Raccrocher si Sophie dit "à très bientôt" (fin de conversation)
-        if (/bient.t/i.test(curAss)) {
+        if (/au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement/i.test(curAss)) {
           console.log('[IA] Fin détectée → raccrocher dans 3s');
           setTimeout(() => { hangupCall(callSid); flush(); }, 3000);
         }
@@ -383,24 +383,49 @@ wss.on('connection', (ws, req) => {
 
   // ─── Prompt Sophie ────────────────────────────────────────────────────────
   function buildPrompt(c, callerNum) {
-    const agentsStr = (c.agents_arr||[]).map(a => `• ${a.nom} → ${a.zones}`).join('\n');
-    return `Tu es Sophie, assistante vocale de l'agence ${c.nom_agence}.
-LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
-RÈGLES ABSOLUES :
-- Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, etc.)
-- Tu ne donnes pas de conseils juridiques ou financiers
-- Tu collectes les informations suivantes dans cet ordre :
-  1. Ville / secteur du bien
-  2. Budget
-  3. Prénom et nom de l'appelant
-  4. Confirmer le numéro (${callerNum})
-- Après collecte : "Merci, un agent va vous rappeler rapidement. Au revoir !"
+    // Priorité 1 : instructions_ia personnalisées depuis la base de données
+    if (c.instructions_ia && c.instructions_ia.trim()) {
+      let prompt = c.instructions_ia
+        .replace(/\{\{CALLER\}\}/g, callerNum)
+        .replace(/\{\{NUM\}\}/g, callerNum);
+      if (c.enregistrement_actif) {
+        const mention = `Cet appel est susceptible d'être enregistré à des fins de formation et d'amélioration de la qualité de service.\n\n`;
+        prompt = mention + prompt;
+      }
+      // Toujours injecter le garde-fou anti-hallucination
+      prompt += `\n\n## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)\nN'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVISE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/demande/chambre/dates) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.`;
+      prompt += `\n\n## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)\nNe récapitule JAMAIS les informations collectées à voix haute avant de raccrocher. Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.`;
+      console.log('[PROMPT] ✅ Instructions IA personnalisées pour', c.nom_agence, '| caller:', callerNum);
+      return prompt;
+    }
+    // Priorité 2 : squelette Hospitality générique
+    console.log('[PROMPT] ⚠️ Squelette Hospitality générique pour', c.nom_agence);
+    const recordMention = c.enregistrement_actif ? `Cet appel est susceptible d'être enregistré à des fins de formation et d'amélioration de la qualité de service.\n\n` : '';
+    return `${recordMention}Tu es Sofia, assistante vocale de ${c.nom_agence}.
+  LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
-AGENTS ET ZONES :
-${agentsStr}
+  RÈGLES ABSOLUES :
+  - Tu es chaleureuse, professionnelle et orientée service client — tu parles avec douceur et empathie, jamais comme un répondeur automatique froid.
+  - Tu ne donnes jamais de prix fermes non confirmés — tu proposes un rappel de l'équipe pour les devis/réservations complexes.
+  - N'INVENTE JAMAIS d'information. Si tu n'as pas clairement entendu ce que dit l'appelant, NE DEVINE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends.
+  - Tu collectes les informations dans cet ordre :
+    1. Prénom et nom de l'appelant
+    2. Nature de la demande (réservation, information séjour, service en chambre, réclamation)
+    3. Numéro de chambre si applicable
+    4. Dates de séjour ou nombre de nuits si pertinent
+    5. Numéro de réservation si disponible
+    6. Confirme le numéro de rappel détecté en le lisant chiffre par chiffre : "${callerNum}" — demande si c'est bien ce numéro
+  - Ne récapitule JAMAIS les informations collectées à voix haute, dis directement la phrase de conclusion
+  - Après collecte complète : "Merci [Prénom], nous revenons vers vous très rapidement. Bonne journée !"
 
-Site web : ${c.site_internet || 'https://www.leone-immobilier.fr'}
-Numéro de l'appelant : ${callerNum}`;
+  Site web : ${c.site_internet || ''}
+  Numéro détecté : ${callerNum}
+
+  ## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)
+  N'INVENTE JAMAIS un nom, une ville, un besoin ou une réponse. Si l'audio n'est pas clair (bruit de fond, circulation, vent, appelant qui marche ou parle loin du téléphone, voix hachée), NE DEVISE PAS : dis simplement "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ (nom/demande/chambre/dates) QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.
+
+  ## NE JAMAIS RÉCAPITULER (OBLIGATOIRE)
+  Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher. Dis directement et uniquement la phrase de conclusion prévue, puis tais-toi.\`;
   }
 
   // ─── Handler messages Twilio ──────────────────────────────────────────────
@@ -436,7 +461,7 @@ Numéro de l'appelant : ${callerNum}`;
       callTimer = setTimeout(() => {
         console.log('[TIMER] 2min écoulées → raccrocher');
         hangup();
-      }, 120000);
+      }, 300000);
     }
 
     else if (m.event === 'media' && m.media?.payload) {
