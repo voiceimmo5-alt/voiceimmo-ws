@@ -693,6 +693,79 @@ app.get('/recording/:sid', async (req, res) => {
   }
 });
 
+
+// ─── Endpoint devis web (controle.voxzen.io) ─────────────────────────────────
+app.post('/api/devis', async (req, res) => {
+  try {
+    const d = req.body || {};
+    console.log('[DEVIS] 📋 Demande devis web reçue:', d.secteur, d.service, d.societe);
+
+    // Sauvegarder comme lead en base
+    const payload = {
+      nom:              (d.prenom + ' ' + d.nom).trim() || 'Inconnu',
+      telephone:        d.telephone || 'N/A',
+      besoin:           (d.service || '') + ': ' + (d.demande || ''),
+      ville:            d.code_postal || '',
+      statut:           'Nouveau',
+      email_envoye:     false,
+      notes:            'SOCIETE=' + (d.societe||'') + ' | SECTEUR=' + (d.secteur||'') + ' | SERVICE=' + (d.service||'') + ' | EMAIL=' + (d.email||'') + ' | SOURCE=web_devis'
+    };
+
+    const saveRes = await fetch(`${BASE44_APP_URL}/saveLead`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const saveData = await saveRes.json();
+
+    // Envoyer email au bureau de contrôle
+    const emailHtml = `
+      <div style="font-family:sans-serif;max-width:600px;margin:auto;background:#faf5ef;border-radius:12px;overflow:hidden">
+        <div style="background:#f28500;padding:20px;text-align:center">
+          <h1 style="color:#fff;margin:0;font-size:20px">📋 NOUVELLE DEMANDE DE DEVIS</h1>
+        </div>
+        <div style="padding:24px;background:#fff">
+          <table style="width:100%;border-collapse:collapse">
+            <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:140px">Société</td><td style="padding:8px">${d.societe||'N/A'}</td></tr>
+            <tr><td style="padding:8px;font-weight:bold">Contact</td><td style="padding:8px">${d.prenom||''} ${d.nom||''}</td></tr>
+            <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Téléphone</td><td style="padding:8px"><a href="tel:${(d.telephone||'').replace(/\s/g,'')}" style="color:#f28500;font-weight:700;text-decoration:none;font-size:16px">${d.telephone||'N/A'}</a></td></tr>
+            <tr><td style="padding:8px;font-weight:bold">Email</td><td style="padding:8px">${d.email||'N/A'}</td></tr>
+            <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Secteur</td><td style="padding:8px">${d.secteur||'N/A'}</td></tr>
+            <tr><td style="padding:8px;font-weight:bold">Service</td><td style="padding:8px">${d.service||'N/A'}</td></tr>
+            <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Code postal</td><td style="padding:8px">${d.code_postal||'N/A'}</td></tr>
+            <tr><td style="padding:8px;font-weight:bold" valign="top">Demande</td><td style="padding:8px">${d.demande||'N/A'}</td></tr>
+          </table>
+          <p style="margin-top:16px;color:#6b7280;font-size:12px">Demande reçue depuis le formulaire devis controle.voxzen.io</p>
+        </div>
+      </div>`;
+
+    try {
+      const emailRes = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: 'Voxzen Contrôle <devis@voxzen.io>',
+          to: process.env.DEVIS_EMAIL || 'christophe.despretz@gmail.com',
+          subject: `📋 Nouvelle demande de devis — ${d.societe||'N/A'} — ${d.service||'N/A'}`,
+          html: emailHtml
+        })
+      });
+      console.log('[DEVIS] ✅ Email devis envoyé, status:', emailRes.status);
+    } catch(e) {
+      console.warn('[DEVIS] ⚠️ Email échoué:', e.message);
+    }
+
+    res.json({ ok: true, leadId: saveData.id || null });
+  } catch(e) {
+    console.error('[DEVIS] ❌ Erreur:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+
 app.post('/twiml', async (req, res) => {
   const caller = req.body.From   || req.body.Caller || '';
   const to     = req.body.To     || req.body.Called || '';
