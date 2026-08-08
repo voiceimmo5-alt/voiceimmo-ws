@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.0-controle-reglementaire', service: 'VoiceImmo WS', build: '20260808.1530' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.2-controle-covetech', service: 'VoiceImmo WS', build: '20260808.1530' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v70.0-controle-reglementaire', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v70.2-controle-covetech', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.0-controle-reglementaire' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.2-controle-covetech' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v70.0-controle-reglementaire', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v70.2-controle-covetech', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1023,17 +1023,18 @@ Après la phrase de clôture, tais-toi immédiatement. Pas de ligne technique "C
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SQUELETTE CONTRÔLE RÉGLEMENTAIRE — Voxzen v1.0
-// Gère : qualification des demandes de contrôle réglementaire (bâtiment, sécurité,
-//        accessibilité, amiante, DPE, électricité, ERP/IGH, etc.), identification
-//        du type de client, planification d'intervention, dispatch vers inspecteur
+// SQUELETTE CONTRÔLE RÉGLEMENTAIRE — Voxzen v2.0
+// Inspiré du parcours devis de Covetech (covetech.fr)
+// Gère : qualification appels entrants pour bureau de contrôle/inspection,
+//        identification secteur + service, collecte coordonnées, dispatch inspecteur
+// Services : Contrôle/VGP, Électricité/APSAD, ENR, Formations, Consulting QHSE/RSE
 // ─────────────────────────────────────────────────────────────────────────────
 function buildPromptControle(c, callerNum) {
   const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
 
   // Construire le catalogue des prestations depuis le champ scraping_format
   // Format attendu : JSON { "prestations": [{"nom":"...","description":"...","duree":"..."}], "zones":"..." }
-  // Si vide → utilise un catalogue générique de démonstration
+  // Si vide → utilise le catalogue Covetech-like de démonstration
   let prestationsText = '';
   let zonesText = '';
   if (c.scraping_format && c.scraping_format.trim()) {
@@ -1046,44 +1047,58 @@ function buildPromptControle(c, callerNum) {
       }
       if (cat.zones) zonesText = cat.zones;
     } catch(e) {
-      // Fallback : texte brut
       prestationsText = c.scraping_format;
     }
   } else {
-    // Catalogue de démonstration générique — contrôle réglementaire
+    // Catalogue de démonstration — calqué sur Covetech
     prestationsText = `PRESTATIONS PROPOSÉES :
-  • Contrôle technique bâtiment — vérification de la conformité technique des constructions — durée: 2-4h
-  • Sécurité incendie ERP/IGH — commission de sécurité, vérification des moyens d'extinction et d'évacuation — durée: 3-6h
-  • Accessibilité PMR — vérification de l'accessibilité des établissements recevant du public — durée: 2-3h
-  • Diagnostic amiante — repérage des matériaux contenant de l'amiante (Dossier Technique Amiante) — durée: 1-3h
-  • DPE — Diagnostic de Performance Énergétique — durée: 1-2h
-  • Contrôle électrique (CONSUEL) — vérification de la conformité de l'installation électrique — durée: 1-2h
-  • Diagnostic plomb (CREP) — recherche de plomb dans les peintures — durée: 1h
-  • Diagnostic termites — recherche de termite dans les bois de construction — durée: 1h
-  • Loi Carrez — mesurage de la surface privative en copropriété — durée: 30min-1h
-  • RSD — Règlement Sanitaire Départemental — contrôle des règles d'hygiène — durée: 2-3h
-  • Étanchéité toiture — vérification de l'étanchéité des toitures-terrasses — durée: 2-4h
-  • Structures — vérification de la solidité des structures (béton, charpente, maçonnerie) — durée: 3-5h`;
+
+1. CONTRÔLE / VGP (Vérifications Générales Périodiques)
+  • Engins de levage (chariots élévateurs, grues, nacelles, palans, treuils) — tous les 6 ou 12 mois selon équipement
+  • Engins de manutention — tous les 6 mois
+  • Engins de terrassement — tous les 12 mois
+  • Compacteurs à déchets — tous les 3 mois
+  • Portes automatiques et motorisées — tous les 6 mois
+  • Ponts élévateurs de véhicule — tous les 12 mois
+  • Accessoires de levage — tous les 12 mois
+
+2. ÉLECTRICITÉ / APSAD
+  • Contrôle et mise en conformité de l'installation électrique
+  • Visites initiales et périodiques (annuel obligatoire si ≥1 salarié et/ou ERP)
+  • Contrôle avant mise sous tension (Consuel)
+  • Délivrance d'attestation Q18 (agrément Apsad)
+
+3. ENR (Énergies Renouvelables)
+  • Contrôle et vérification d'installations ENR
+
+4. FORMATIONS
+  • Autorisation de conduite (chariots, nacelles, grues)
+  • AIPR (Autorisation d'Intervention à Proximité des Réseaux)
+  • Travaux en hauteur
+  • Habilitation électrique
+
+5. CONSULTING QHSE / RSE
+  • Rédaction et mise à jour du DU/DUERP (Document Unique d'Évaluation des Risques Professionnels)
+  • Coordination sécurité incendie
+  • Gestion des déchets dangereux
+  • Gestion des plans de prévention
+
+6. AUTRE — demande spécifique à qualifier par un inspecteur`;
   }
 
-  // Zones d'intervention
-  if (!zonesText) zonesText = c.horaires ? '' : '';
-  const zonesInter = zonesText || (c.agents_arr || []).map(a => a.zones).filter(Boolean).join(', ') || 'non précisé';
-
+  const zonesInter = zonesText || (c.agents_arr || []).map(a => a.zones).filter(Boolean).join(', ') || 'toute la France';
   const horaires = c.horaires ? `\nHoraires d'intervention : ${c.horaires}` : '';
   const siteWeb  = c.site_internet ? `\nSite web : ${c.site_internet}` : '';
-
-  // Liste des inspecteurs
   const inspecteurs = (c.agents_arr || []).map(a => `• ${a.nom} → spécialité: ${a.zones || 'généraliste'}`).join('\n');
 
-  return `${recordMention}Tu es l'assistante vocale de ${c.nom_agence || 'notre bureau de contrôle'}, un organisme de contrôle et d'inspection réglementaire.
+  return `${recordMention}Tu es l'assistante vocale de ${c.nom_agence || 'notre bureau de contrôle'}, un organisme de contrôle et d'inspection réglementaire accrédité.
 LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
 
 RÈGLES ABSOLUES :
 - IMPORTANT : le message d'accueil a déjà été prononcé automatiquement. Ne dis JAMAIS "Bonjour" à nouveau — enchaîne DIRECTEMENT sur la qualification du besoin.
 - Tu es professionnelle, rassurante et précise — les appelants peuvent être inquiets (obligations réglementaires, urgence de conformité, sanctions possibles). Sois rassurante sans minimiser les enjeux.
 - Tu NE DONNES JAMAIS de diagnostic technique, de constat, d'avis de conformité ou d'interprétation réglementaire au téléphone — tu qualifies le besoin et planifies une intervention.
-- Tu NE DONNES JAMAIS de tarif ferme au téléphone — tu proposes un rappel pour devis.
+- Tu NE DONNES JAMAIS de tarif ferme au téléphone — tu proposes systématiquement un rappel pour devis.
 - Tu ne mentionnes jamais les sanctions ou amendes potentielles — tu restes neutre sur les obligations légales.
 - N'INVENTE JAMAIS une prestation, un prix, une date de disponibilité ou une information. Si tu ne trouves pas dans les prestations ci-dessous, dis "Je vais vérifier si nous proposons ce type de contrôle, puis-je vous rappeler ?"
 - Si l'appelant a une demande URGENTE (mise en demeure, inspection imminente, sinistre), note-le comme prioritaire et propose un rappel dans la journée.
@@ -1094,43 +1109,61 @@ ${prestationsText}
 
 DÉROULEMENT DE L'APPEL (strict, dans cet ordre) :
 
-ÉTAPE 1 — IDENTIFICATION DU TYPE DE CLIENT
-  Demande : "Vous appelez en tant que particulier, syndic, entreprise, ou collectivité ?"
-  → Note le type de client (particulier / syndic / entreprise / collectivité / gestionnaire immobilier)
+ÉTAPE 1 — SECTEUR D'ACTIVITÉ
+  Demande : "Vous appelez pour quel secteur d'activité ?"
+  → Agriculture / Espaces verts
+  → Automobile
+  → BTP / Artisanat
+  → Collectivités
+  → Commerce / Restauration
+  → Commerce de gros / Logistique
+  → Immobilier
+  → Industrie
+  → Santé / Bien-être
+  → Tourisme / Loisirs
+  → Traitement des déchets / Écologie
+  → Services
+  → Autre
+  Note le secteur de l'appelant.
 
-ÉTAPE 2 — NATURE DU BESOIN
-  Demande : "Quel type de contrôle ou de diagnostic souhaitez-vous réaliser ?"
-  → Si l'appelant décrit un besoin précis (amiante, DPE, sécurité incendie, accessibilité, etc.), identifie la prestation correspondante dans la liste ci-dessus
-  → Si l'appelant ne sait pas exactement, demande : "S'agit-il d'un bâtiment résidentiel, commercial, ERP (établissement recevant du public), ou industriel ?"
-  → Si la demande n'est pas dans la liste, note "Autre demande" et propose un rappel pour qualification par un inspecteur
+ÉTAPE 2 — SERVICE SOUHAITÉ
+  Demande : "Quel service souhaitez-vous ?"
+  → Contrôle / VGP (engins de levage, manutention, terrassement, portes automatiques, ponts élévateurs)
+  → Électricité / APSAD (contrôle installation électrique, Consuel, attestation Q18)
+  → ENR (énergies renouvelables)
+  → Formations (autorisation de conduite, AIPR, habilitation électrique, travaux en hauteur)
+  → Consulting QHSE / RSE (DUERP, sécurité incendie, déchets dangereux, plans de prévention)
+  → Autre
+  → Si l'appelant ne sait pas : "S'agit-il d'un contrôle obligatoire (VGP, électricité) ou d'une démarche qualité (QHSE, formation) ?"
 
-ÉTAPE 3 — LOCALISATION ET CARACTÉRISTIQUES
-  Demande l'adresse complète du bien ou du bâtiment à contrôler :
-    1. Adresse (numéro, rue, ville, code postal)
-    2. Type de bâtiment (maison, immeuble, commerce, ERP, usine)
-    3. Surface approximative (si connue)
-    4. Année de construction (si connue — utile pour amiante, plomb, DPE)
+ÉTAPE 3 — LOCALISATION
+  Demande : "Quel est le code postal ou la ville du site à contrôler ?"
+  → Note la localisation pour le dispatch d'inspecteur
 
-ÉTAPE 4 — URGENCE ET DÉLAI
-  Demande : "Avez-vous une contrainte de délai ? Une date butoire, une mise en demeure, ou un impératif particulier ?"
+ÉTAPE 4 — SOCIÉTÉ
+  Demande : "Au nom de quelle société appelez-vous ?"
+  → Note le nom de l'entreprise cliente
+  → Si particulier : "Vous appelez à titre personnel ?"
+
+ÉTAPE 5 — DESCRIPTION DU BESOIN
+  Demande : "Pouvez-vous décrire brièvement votre besoin ou le type d'équipement à contrôler ?"
+  → Note les détails (type d'engin, installation électrique, nombre d'équipements, etc.)
   → Si urgence (mise en demeure, inspection imminente) : note "URGENT"
-  → Si pas d'urgence : demande une plage de disponibilité souhaitée
 
-ÉTAPE 5 — COORDONNÉES
+ÉTAPE 6 — COORDONNÉES
   Collecte dans cet ordre :
     1. Prénom et nom de l'appelant
-    2. Nom de l'entreprise / organisme (si applicable)
-    3. Confirme le numéro de téléphone en lisant chiffre par chiffre : "${callerNum}" — "C'est bien votre numéro ?"
-    4. Adresse email (si l'appelant souhaite recevoir le devis par email)
+    2. Confirme le numéro de téléphone en lisant chiffre par chiffre : "${callerNum}" — "C'est bien votre numéro ?"
+    3. Adresse email pour l'envoi du devis (optionnel mais proposer)
 
-ÉTAPE 6 — PHRASE DE CLÔTURE
+ÉTAPE 7 — PHRASE DE CLÔTURE
   Une fois toutes les informations collectées, dis UNIQUEMENT :
   "Merci [Prénom], un de nos inspecteurs vous recontacte sous 24 à 48 heures pour planifier l'intervention et vous transmettre un devis. Je vous souhaite une excellente journée, au revoir."
 
 ─────────────────────────────────────────────────────────────
 FORMAT DE SORTIE SILENCIEUX (NE JAMAIS PRONONCER À VOIX HAUTE) :
 Après la phrase de clôture, émets silencieusement en dernier token de ta réponse le bloc :
-DEMANDE: NOM=[nom client] | TEL=${callerNum} | TYPE_CLIENT=[particulier/syndic/entreprise/collectivite] | TYPE_CONTROLE=[type de contrôle] | ADRESSE=[adresse complète] | BATIMENT=[maison/immeuble/commerce/ERP/usine] | SURFACE=[surface si connue] | URGENCE=[normale/urgente] | DATE_SOUHAITEE=[date ou plage] | EMAIL=[email si fourni]
+DEMANDE: NOM=[nom client] | TEL=${callerNum} | SOCIETE=[nom société] | SECTEUR=[secteur activité] | SERVICE=[Contrôle/VGP, Électricité/APSAD, ENR, Formations, Consulting QHSE/RSE, Autre] | DESCRIPTION=[description besoin] | CODE_POSTAL=[code postal] | VILLE=[ville] | URGENCE=[normale/urgente] | EMAIL=[email si fourni]
 ─────────────────────────────────────────────────────────────
 ${horaires}${siteWeb}
 Zones d'intervention : ${zonesInter}
@@ -1146,7 +1179,6 @@ N'INVENTE JAMAIS un nom, une prestation, une adresse, une date ou une informatio
 ## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
 Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un contrôle..."). Dis directement et uniquement la phrase de clôture prévue, puis tais-toi immédiatement. Pas de ligne technique "DEMANDE:" à voix haute.`;
 }
-
 
 const SKELETON_BUILDERS = {
   IMMO: buildPromptImmo,
@@ -1500,9 +1532,9 @@ wss.on('connection', (ws, req) => {
           console.log('[CONTROLE] ℹ️ Pas de webhook configuré dans regles_dispatch — demande loguée uniquement');
         }
         // Enrichir le lead avec les détails de la demande pour l'email et la base
-        lead.besoin = 'Contrôle: ' + demande.type_controle + ' (' + demande.type_client + ')';
-        lead.ville  = demande.adresse;
-        lead.notes  = 'URGENCE=' + demande.urgence + ' | BATIMENT=' + demande.batiment + ' | SURFACE=' + demande.surface + ' | DATE=' + demande.date_souhaitee + ' | EMAIL=' + demande.email;
+        lead.besoin = demande.service + ': ' + demande.description;
+        lead.ville  = demande.ville || demande.code_postal;
+        lead.notes  = 'SOCIETE=' + demande.societe + ' | SECTEUR=' + demande.secteur + ' | URGENCE=' + demande.urgence + ' | EMAIL=' + demande.email;
       }
     }
 
@@ -1566,19 +1598,19 @@ function parseCommandePizzeria(transcript) {
 function parseDemandeControle(transcript) {
   // Cherche le bloc DEMANDE: émis silencieusement par le modèle en dernier token
   const fullText = Array.isArray(transcript) ? transcript.join(' ') : transcript;
-  const m = fullText.match(/DEMANDE:\s*NOM=([^|]+)\|\s*TEL=([^|]+)\|\s*TYPE_CLIENT=([^|]+)\|\s*TYPE_CONTROLE=([^|]+)\|\s*ADRESSE=([^|]*)\|\s*BATIMENT=([^|]*)\|\s*SURFACE=([^|]*)\|\s*URGENCE=([^|]+)\|\s*DATE_SOUHAITEE=([^|]*)\|\s*EMAIL=([^\n\r]*)/i);
+  const m = fullText.match(/DEMANDE:\s*NOM=([^|]+)\|\s*TEL=([^|]+)\|\s*SOCIETE=([^|]*)\|\s*SECTEUR=([^|]*)\|\s*SERVICE=([^|]*)\|\s*DESCRIPTION=([^|]*)\|\s*CODE_POSTAL=([^|]*)\|\s*VILLE=([^|]*)\|\s*URGENCE=([^|]+)\|\s*EMAIL=([^\n\r]*)/i);
   if (!m) return null;
   return {
-    nom:           (m[1]||'').trim(),
-    tel:           (m[2]||'').trim(),
-    type_client:   (m[3]||'').trim(),
-    type_controle: (m[4]||'').trim(),
-    adresse:       (m[5]||'').trim(),
-    batiment:      (m[6]||'').trim(),
-    surface:       (m[7]||'').trim(),
-    urgence:       (m[8]||'').trim(),
-    date_souhaitee:(m[9]||'').trim(),
-    email:         (m[10]||'').trim()
+    nom:          (m[1]||'').trim(),
+    tel:          (m[2]||'').trim(),
+    societe:      (m[3]||'').trim(),
+    secteur:      (m[4]||'').trim(),
+    service:      (m[5]||'').trim(),
+    description:  (m[6]||'').trim(),
+    code_postal:  (m[7]||'').trim(),
+    ville:        (m[8]||'').trim(),
+    urgence:      (m[9]||'').trim(),
+    email:        (m[10]||'').trim()
   };
 }
 
