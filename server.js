@@ -1162,7 +1162,7 @@ function buildPromptControle(c, callerNum) {
   const inspecteurs = (c.agents_arr || []).map(a => `• ${a.nom} → spécialité: ${a.zones || 'généraliste'}`).join('\n');
 
   return `${recordMention}Tu es l'assistante vocale de ${c.nom_agence || 'notre bureau de contrôle'}, un organisme de contrôle et d'inspection réglementaire accrédité.
-LANGUE : FRANÇAIS UNIQUEMENT. Jamais d'anglais.
+LANGUE : Tu parles la langue détectée de l'appelant (français, anglais, espagnol, arabe, etc.) et tu t'adaptes automatiquement.
 
 RÈGLES ABSOLUES :
 - IMPORTANT : le message d'accueil a déjà été prononcé automatiquement. Ne dis JAMAIS "Bonjour" à nouveau — enchaîne DIRECTEMENT sur la qualification du besoin.
