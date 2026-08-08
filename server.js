@@ -777,11 +777,8 @@ app.post('/twiml', async (req, res) => {
   //   est prise en compte immédiatement sans redémarrer le serveur
   await refreshConfigs();
 
-  // Fix : SERVER_BASE_URL peut pointer vers un mauvais domaine Railway — forcer le bon
+  // Utiliser SERVER_BASE_URL directement (chaque service Railway a son propre domaine)
   let baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
-  if (baseUrl.includes('production-92c4') || baseUrl.includes('railway.app')) {
-    baseUrl = 'https://ws-staging.voiceimmo.fr';
-  }
 
   // Enregistrement : on passe l'info via paramètre au WebSocket
   // L'enregistrement sera déclenché via API REST Twilio après établissement du stream
@@ -1770,11 +1767,8 @@ function parseDemandeControle(transcript) {
         setTimeout(async () => {
           try {
             const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-            // Fix : SERVER_BASE_URL peut pointer vers un mauvais domaine Railway — forcer le bon
+            // Utiliser SERVER_BASE_URL directement (chaque service Railway a son propre domaine)
   let baseUrl = process.env.SERVER_BASE_URL || 'https://ws-staging.voiceimmo.fr';
-  if (baseUrl.includes('production-92c4') || baseUrl.includes('railway.app')) {
-    baseUrl = 'https://ws-staging.voiceimmo.fr';
-  }
             const recResp = await fetch(
               `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}/Recordings.json`,
               {
