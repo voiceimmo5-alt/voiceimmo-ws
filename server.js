@@ -1759,12 +1759,12 @@ function parseDemandeControle(transcript) {
       cfg = getConfig(to || '');
       connectOAI(lead.tel);
       callTimer = setTimeout(async () => {
-        console.log('[TIMER] 2min → raccrochage automatique');
+        console.log('[TIMER] 4min → raccrochage automatique');
         hangingUp = true;
         await hangupTwilio(callSid);
         hangup();
         await flush();
-      }, 120000);
+      }, 240000);
 
       // Déclencher l'enregistrement via API REST Twilio (pas via TwiML pour ne pas couper le stream)
       if (doRecord && callSid && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
