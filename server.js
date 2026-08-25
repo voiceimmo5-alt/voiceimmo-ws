@@ -1100,7 +1100,7 @@ wss.on('connection', (ws, req) => {
             input: {
               format: { type: 'audio/pcmu' },
               transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
             },
             output: {
               format: { type: 'audio/pcmu' },
@@ -1160,12 +1160,23 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      // Gérer les interruptions : si l'utilisateur parle, stopper le TTS MiniMax
-      if (MINIMAX_TTS_ENABLED &&
-          m.type === 'response.output_audio.cancelled' && streamSid) {
+      // ─── Barge-in / Interruption ───────────────────────────────────────
+      // Quand l'utilisateur parle pendant que le bot parle, OpenAI envoie
+      // response.output_audio.cancelled. On DOIT envoyer 'clear' à Twilio
+      // pour vider son buffer audio (sinon l'audio déjà envoyé continue de jouer).
+      if (m.type === 'response.output_audio.cancelled' && streamSid) {
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
-          console.log('[MM-TTS] Interruption détectée → clear Twilio');
+          console.log('[INTERRUPT] 🛑 Barge-in détecté → clear Twilio (audio coupé)');
+        }
+      }
+
+      // input_audio_buffer.speech_started : l'utilisateur commence à parler
+      // Double garantie de coupure (au cas où output_audio.cancelled arrive en retard)
+      if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 Speech started → clear Twilio');
         }
       }
 
