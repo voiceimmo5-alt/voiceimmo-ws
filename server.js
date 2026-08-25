@@ -257,6 +257,7 @@ wss.on('connection', (ws, req) => {
   let queue     = [];
   let transcript = [];
   let curAss    = '';
+  let botInterrupted = false; // Flag barge-in : bloque l'envoi d'audio vers Twilio
   let lead      = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
   let cfg       = null;
   let saved     = false;
@@ -302,7 +303,7 @@ wss.on('connection', (ws, req) => {
           voice: voix,
           input_audio_format: 'g711_ulaw',
           output_audio_format: 'g711_ulaw',
-          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+          turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
         }
       }));
     });
@@ -331,14 +332,45 @@ wss.on('connection', (ws, req) => {
         }));
       }
 
+      // Reset barge-in quand une nouvelle réponse commence
+      if (m.type === 'response.created') {
+        botInterrupted = false;
+      }
+
       // Audio généré par OAI → renvoyer à Twilio
       if (m.type === 'response.audio.delta' && m.delta && streamSid) {
+        if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (ws.readyState === 1) { // 1 = OPEN
           ws.send(JSON.stringify({
             event: 'media',
             streamSid,
             media: { payload: m.delta }
           }));
+        }
+      }
+
+      // ─── Barge-in / Interruption ───────────────────────────────────────
+      // Quand l'utilisateur parle pendant que le bot parle, on doit :
+      // 1) clear Twilio (vider le buffer audio)
+      // 2) Bloquer les deltas en vol (botInterrupted = true)
+      // 3) Annuler la réponse OpenAI (response.cancel)
+      if (m.type === 'response.output_audio.cancelled' && streamSid) {
+        botInterrupted = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear Twilio + bloque deltas');
+        }
+      }
+
+      if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        botInterrupted = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 Speech started → clear Twilio + bloque deltas');
+        }
+        if (oai && oai.readyState === WebSocket.OPEN) {
+          oai.send(JSON.stringify({ type: 'response.cancel' }));
+          console.log('[INTERRUPT] 🛑 response.cancel envoyé à OpenAI');
         }
       }
 

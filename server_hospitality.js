@@ -290,6 +290,7 @@ wss.on('connection', (ws, req) => {
   let queue       = [];
   let transcript  = [];
   let curAss      = '';
+  let botInterrupted = false; // Flag barge-in : bloque l'envoi d'audio vers Twilio
   let cfg         = null;
   let hotelNumero = '';
   let saved       = false;
@@ -355,7 +356,7 @@ wss.on('connection', (ws, req) => {
             input: {
               format: { type: 'audio/pcmu' },
               transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 800 }
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
             },
             output: {
               format: { type: 'audio/pcmu' },
@@ -386,10 +387,37 @@ wss.on('connection', (ws, req) => {
         }));
       }
 
+      // Reset barge-in quand une nouvelle réponse commence
+      if (m.type === 'response.created') {
+        botInterrupted = false;
+      }
+
       // Audio vers Twilio
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
+        }
+      }
+
+      // ─── Barge-in / Interruption ───────────────────────────────────────
+      if (m.type === 'response.output_audio.cancelled' && streamSid) {
+        botInterrupted = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear + bloque deltas');
+        }
+      }
+
+      if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        botInterrupted = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 Speech started → clear + bloque deltas');
+        }
+        if (oai && oai.readyState === WebSocket.OPEN) {
+          oai.send(JSON.stringify({ type: 'response.cancel' }));
+          console.log('[INTERRUPT] 🛑 response.cancel envoyé à OpenAI');
         }
       }
 
