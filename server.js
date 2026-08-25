@@ -944,6 +944,7 @@ wss.on('connection', (ws, req) => {
   let oai        = null;
   let ready      = false;
   let queue      = [];
+  let botInterrupted = false; // Flag barge-in : bloque lenvoi dudio vers Twilio
   let transcript = [];
   let curAss     = '';
   let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
@@ -1138,7 +1139,13 @@ wss.on('connection', (ws, req) => {
         }));
       }
 
+      // Reset barge-in quand une nouvelle réponse commence
+      if (m.type === 'response.created') {
+        botInterrupted = false;
+      }
+
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (!MINIMAX_TTS_ENABLED) {
           // Fallback : audio OpenAI direct (mixé avec le pad si disponible)
           if (ws.readyState === 1) {
@@ -1165,18 +1172,25 @@ wss.on('connection', (ws, req) => {
       // response.output_audio.cancelled. On DOIT envoyer 'clear' à Twilio
       // pour vider son buffer audio (sinon l'audio déjà envoyé continue de jouer).
       if (m.type === 'response.output_audio.cancelled' && streamSid) {
+        botInterrupted = true; // Bloquer les deltas en vol
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
-          console.log('[INTERRUPT] 🛑 Barge-in détecté → clear Twilio (audio coupé)');
+          console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear Twilio + bloque deltas');
         }
       }
 
       // input_audio_buffer.speech_started : l'utilisateur commence à parler
       // Double garantie de coupure (au cas où output_audio.cancelled arrive en retard)
       if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        botInterrupted = true; // Bloquer les deltas en vol
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
-          console.log('[INTERRUPT] 🛑 Speech started → clear Twilio');
+          console.log('[INTERRUPT] 🛑 Speech started → clear Twilio + bloque deltas');
+        }
+        // Annuler la réponse en cours côté OpenAI
+        if (oai && oai.readyState === WebSocket.OPEN) {
+          oai.send(JSON.stringify({ type: 'response.cancel' }));
+          console.log('[INTERRUPT] 🛑 response.cancel envoyé à OpenAI');
         }
       }
 
