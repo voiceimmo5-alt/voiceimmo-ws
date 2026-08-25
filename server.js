@@ -746,6 +746,7 @@ wss.on('connection', (ws, req) => {
   let queue      = [];
   let transcript = [];
   let curAss     = '';
+  let botInterrupted = false; // Flag barge-in : bloque l'envoi d'audio vers Twilio
   let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
   let lastQuestion = null; // derniere question posee par Sophie (ville/prix/ref/nom) pour capture brute si reponse en un mot
   let cfg        = null;
@@ -918,7 +919,7 @@ wss.on('connection', (ws, req) => {
             input: {
               format: { type: 'audio/pcmu' },
               transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 900, create_response: false }
+              turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
             },
             output: {
               format: { type: 'audio/pcmu' },
@@ -970,7 +971,13 @@ wss.on('connection', (ws, req) => {
         }
       }
 
+      // Reset barge-in quand une nouvelle réponse commence
+      if (m.type === 'response.created') {
+        botInterrupted = false;
+      }
+
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (true /* ElevenLabs désactivé */) {
           // Fallback : audio OpenAI direct
           if (ws.readyState === 1) {
@@ -978,6 +985,27 @@ wss.on('connection', (ws, req) => {
           }
         }
         // Si ElevenLabs actif : on ignore l'audio OpenAI, on attend le transcript
+      }
+
+      // ─── Barge-in / Interruption ───────────────────────────────────────
+      if (m.type === 'response.output_audio.cancelled' && streamSid) {
+        botInterrupted = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear + bloque deltas');
+        }
+      }
+
+      if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        botInterrupted = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[INTERRUPT] 🛑 Speech started → clear + bloque deltas');
+        }
+        if (oai && oai.readyState === WebSocket.OPEN) {
+          oai.send(JSON.stringify({ type: 'response.cancel' }));
+          console.log('[INTERRUPT] 🛑 response.cancel envoyé à OpenAI');
+        }
       }
 
       // ElevenLabs TTS : intercepter le transcript et générer l'audio via ElevenLabs
@@ -1006,7 +1034,7 @@ wss.on('connection', (ws, req) => {
           // avant la coupure : une réponse parasite démarrait après la clôture et se faisait couper net
           // par notre hangup programmé, au lieu de ne jamais démarrer.
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 900, create_response: false } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
           }
           cancelGraceTimer = setTimeout(() => {
             cancelGraceTimer = null;
@@ -1049,7 +1077,7 @@ wss.on('connection', (ws, req) => {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 7s (laisse jouer l\'audio complet)');
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 900, create_response: false } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
           }
           scheduleHangup(7000);
           return;
@@ -1101,7 +1129,7 @@ wss.on('connection', (ws, req) => {
         if (!firstRealTurnHandled) {
           firstRealTurnHandled = true;
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 900, create_response: true } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
             oai.send(JSON.stringify({ type: 'response.create' }));
           }
         }
