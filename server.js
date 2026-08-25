@@ -155,6 +155,13 @@ const BASE44_APP_URL     = 'https://fr-2758ee0c.base44.app/functions';
 const RESEND_API_KEY        = process.env.RESEND_API_KEY        || '';
 const STRIPE_SECRET_KEY     = process.env.STRIPE_SECRET_KEY     || '';
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+
+// ─── MiniMax TTS ─────────────────────────────────────────────────────────────
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
+const MINIMAX_TTS_MODEL = process.env.MINIMAX_TTS_MODEL || 'speech-02-turbo';
+// Voix française — MiniMax utilise language_boost pour le français
+const MINIMAX_VOICE_ID = process.env.MINIMAX_VOICE_ID || 'French_Trustworth_Man';
+const MINIMAX_TTS_ENABLED = process.env.MINIMAX_TTS_ENABLED === 'true'; // toggle on/off
 const BASE44_WRITE_URL      = 'https://fr-2758ee0c.base44.app/functions';
 
 
@@ -1132,24 +1139,33 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
-        if (true /* ElevenLabs désactivé */) {
+        if (!MINIMAX_TTS_ENABLED) {
           // Fallback : audio OpenAI direct (mixé avec le pad si disponible)
           if (ws.readyState === 1) {
             // Audio OpenAI direct — pas de mixing (préserve la qualité mulaw 8kHz)
             ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: m.delta } }));
           }
         }
-        // Si ElevenLabs actif : on ignore l'audio OpenAI, on attend le transcript
+        // Si MiniMax TTS activé : on ignore l'audio OpenAI, on attend le transcript
       }
 
-      // ElevenLabs TTS : intercepter le transcript et générer l'audio via ElevenLabs
-      if (false /* ElevenLabs désactivé */ &&
-          m.type === 'response.audio_transcript.done' && m.transcript && streamSid) {
+      // MiniMax TTS : intercepter le transcript et générer l'audio via MiniMax
+      if (MINIMAX_TTS_ENABLED &&
+          m.type === 'response.output_audio_transcript.done' && m.transcript && streamSid) {
         const txt = m.transcript.trim();
         if (txt) {
-          sendElevenLabsAudio(ws, streamSid, txt, ELEVENLABS_VOICE_ID).catch(e =>
-            console.error('[EL-TTS] Erreur réponse:', e.message)
+          sendMiniMaxAudio(ws, streamSid, txt).catch(e =>
+            console.error('[MM-TTS] Erreur réponse:', e.message)
           );
+        }
+      }
+
+      // Gérer les interruptions : si l'utilisateur parle, stopper le TTS MiniMax
+      if (MINIMAX_TTS_ENABLED &&
+          m.type === 'response.output_audio.cancelled' && streamSid) {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: 'clear', streamSid }));
+          console.log('[MM-TTS] Interruption détectée → clear Twilio');
         }
       }
 
@@ -1538,4 +1554,126 @@ async function sendElevenLabsAudio(ws, streamSid, text, voiceId) {
   }
 }
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.12-auto-reload-on-call sur port ${PORT}`));
+// ─── MiniMax TTS streaming → WebSocket → Twilio ─────────────────────────────
+// Utilise l'API WebSocket de MiniMax pour du TTS en streaming temps réel
+// Format de sortie : ulaw 8kHz (μ-law) = format natif Twilio, aucune conversion nécessaire
+
+async function sendMiniMaxAudio(ws, streamSid, text) {
+  if (!MINIMAX_API_KEY) {
+    console.error('[MM-TTS] ❌ Pas de clé API MiniMax');
+    return;
+  }
+
+  try {
+    console.log(`[MM-TTS] 🎙️ Synthèse: "${text.slice(0, 80)}"`);
+
+    // Connexion WebSocket à MiniMax
+    const mmWs = new WebSocket('wss://api.minimax.io/ws/v1/t2a_v2', {
+      headers: { Authorization: `Bearer ${MINIMAX_API_KEY}` }
+    });
+
+    let audioSent = 0;
+    let started = false;
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('MiniMax timeout (10s)')), 10000);
+
+      mmWs.on('open', () => {
+        console.log('[MM-TTS] WebSocket connecté → task_start');
+
+        // Étape 1 : task_start
+        mmWs.send(JSON.stringify({
+          event: 'task_start',
+          model: MINIMAX_TTS_MODEL,
+          voice_setting: {
+            voice_id: MINIMAX_VOICE_ID,
+            speed: 1.0,
+            vol: 1.0,
+            pitch: 0,
+            english_normalization: false
+          },
+          audio_setting: {
+            sample_rate: 8000,     // 8kHz = Twilio natif
+            bitrate: 64000,
+            format: 'mulaw',       // μ-law = format Twilio natif
+            channel: 1
+          },
+          language_boost: 'french'
+        }));
+      });
+
+      mmWs.on('message', (raw) => {
+        let msg;
+        try { msg = JSON.parse(raw.toString()); } catch(_) { return; }
+
+        // task_started → envoyer le texte
+        if (msg.event === 'task_started' && !started) {
+          started = true;
+          console.log('[MM-TTS] Task démarrée → task_continue');
+          mmWs.send(JSON.stringify({
+            event: 'task_continue',
+            text: text
+          }));
+          return;
+        }
+
+        // Réception des chunks audio
+        if (msg.data && msg.data.audio) {
+          const audioHex = msg.data.audio;
+          const audioBuf = Buffer.from(audioHex, 'hex');
+
+          // Envoyer par chunks de 160 bytes (20ms @ 8kHz μ-law = natif Twilio)
+          const CHUNK = 160;
+          for (let i = 0; i < audioBuf.length; i += CHUNK) {
+            const chunk = audioBuf.slice(i, i + CHUNK);
+            if (ws.readyState === 1 && streamSid) {
+              ws.send(JSON.stringify({
+                event: 'media',
+                streamSid,
+                media: { payload: chunk.toString('base64') }
+              }));
+              audioSent += chunk.length;
+            }
+          }
+          return;
+        }
+
+        // Fin de la synthèse
+        if (msg.is_final || msg.event === 'task_finished') {
+          clearTimeout(timeout);
+          console.log(`[MM-TTS] ✅ Audio envoyé: ${audioSent} bytes pour "${text.slice(0,60)}"`);
+          try { mmWs.close(); } catch(_) {}
+          resolve();
+        }
+
+        // Erreur
+        if (msg.event && msg.event.includes('error')) {
+          clearTimeout(timeout);
+          console.error('[MM-TTS] ❌ Erreur MiniMax:', JSON.stringify(msg));
+          try { mmWs.close(); } catch(_) {}
+          reject(new Error(`MiniMax error: ${JSON.stringify(msg)}`));
+        }
+      });
+
+      mmWs.on('error', (err) => {
+        clearTimeout(timeout);
+        console.error('[MM-TTS] ❌ WebSocket error:', err.message);
+        reject(err);
+      });
+
+      mmWs.on('close', () => {
+        clearTimeout(timeout);
+        if (audioSent > 0) {
+          console.log(`[MM-TTS] Connexion fermée. Total: ${audioSent} bytes`);
+          resolve();
+        }
+      });
+    });
+  } catch(e) {
+    console.error('[MM-TTS] ❌ Erreur globale:', e.message);
+    // Fallback : si MiniMax échoue, on ne fait rien (l'appel continue sans audio)
+    // TODO: fallback vers audio OpenAI si MiniMax échoue systématiquement
+  }
+}
+
+server.listen(PORT, '0.0.0.0', () => console.log(`[START] VoiceImmo WS v68.13-minimax-tts sur port ${PORT}`));
