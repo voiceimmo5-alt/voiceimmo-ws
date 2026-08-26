@@ -164,7 +164,7 @@ const CONFIGS_FALLBACK = {
   '+33939245959': {
     nom_agence:          'LEONE IMMOBILIER',
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
-    voix:                'shimmer',
+    voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour et bienvenue chez Leone Immobilier, comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -178,7 +178,7 @@ const CONFIGS_FALLBACK = {
   '+33939247019': {
     nom_agence:          'LEONE IMMOBILIER (STAGING)',
     client_db_id:        '6a057fa03ad6f7b2ebf4b79e',
-    voix:                'shimmer',
+    voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour, ceci est le serveur de test Leone Immobilier. Comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -227,7 +227,7 @@ function mapClientToConfig(c) {
   return {
     nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
     client_db_id:         c.id || fallback.client_db_id,
-    voix:                 c.voix || fallback.voix || 'shimmer',
+    voix:                 c.voix || fallback.voix || 'marin',
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
     instructions_ia:      c.instructions_ia || null,
@@ -524,7 +524,7 @@ async function handleNewClientOnboarding(obj, customerId, subscriptionId, plan) 
       date_souscription: new Date().toISOString().split('T')[0],
       message_accueil: 'Bonjour, vous êtes bien chez ' + nom_agence + '. Comment puis-je vous aider ?',
       instructions_ia: 'Tu es un assistant téléphonique pour l\'agence ' + nom_agence + '. Réponds de façon professionnelle et chaleureuse.',
-      voix: 'shimmer',
+      voix: 'marin',
       appels_total: 0,
       appels_mois: 0,
       appels_pack: planFinal === 'premium' ? 500 : planFinal === 'pro' ? 200 : 100,
@@ -754,7 +754,7 @@ app.get('/pad.wav', (req, res) => {
 function getRecordingMention(voix) {
   // Adapté selon la voix (toutes féminines en français par défaut)
   const voixMasc = ['alloy', 'echo', 'onyx', 'fable'];
-  const estMasc  = voixMasc.includes((voix||'coral').toLowerCase());
+  const estMasc  = voixMasc.includes((voix||'marin').toLowerCase());
   if (estMasc) {
     return "Pour améliorer la qualité de notre service, cet appel peut être enregistré. ";
   }
@@ -1268,7 +1268,7 @@ wss.on('connection', (ws, req) => {
             },
             output: {
               format: { type: 'audio/pcmu' },
-              voice: (cfg || DEF_CFG())?.voix || 'shimmer'
+              voice: (cfg || DEF_CFG())?.voix || 'marin'
             }
           }
         }
