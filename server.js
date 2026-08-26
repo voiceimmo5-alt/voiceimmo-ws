@@ -102,6 +102,7 @@ const BASE44_WRITE_URL      = 'https://fr-2758ee0c.base44.app/functions';
 const CONFIGS_FALLBACK = {
   '+33939245959': {
     nom_agence:          'LEONE IMMOBILIER',
+    numero_twilio:       '+33939245959',
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
     voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
@@ -116,6 +117,7 @@ const CONFIGS_FALLBACK = {
   },
   '+33939247019': {
     nom_agence:          'LEONE IMMOBILIER (STAGING)',
+    numero_twilio:       '+33939247019',
     client_db_id:        '6a057fa03ad6f7b2ebf4b79e',
     voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
@@ -166,6 +168,7 @@ function mapClientToConfig(c) {
   return {
     nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
     client_db_id:         c.id || fallback.client_db_id,
+    numero_twilio:        num || fallback.numero_twilio || '',
     voix:                 c.voix || fallback.voix || 'marin',
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
@@ -836,24 +839,70 @@ wss.on('connection', (ws, req) => {
     }
   }
 
-  // ─── Incrémentation compteurs appels ────────────────────────────────────────
+  // ─── Incrémentation compteurs appels (intégrée au squelette, avec retry) ─────
   async function incrementAppels(cfgData) {
-    try {
-      const res = await fetch(`${BASE44_APP_URL}/incrementAppels`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ client_db_id: cfgData?.client_db_id }),
-        signal:  AbortSignal.timeout(15000)
-      });
-      const data = await res.json();
-      if (data.ok) {
-        console.log('[APPEL] ✅ Compteurs incrémentés →', `total:${data.appels_total} mois:${data.appels_mois}`);
-      } else {
-        console.warn('[APPEL] ⚠️ Erreur incrementAppels:', JSON.stringify(data));
-      }
-    } catch(e) {
-      console.warn('[APPEL] ⚠️ Exception incrementAppels:', e.message);
+    const clientDbId = cfgData?.client_db_id;
+    if (!clientDbId) {
+      console.warn('[APPEL] ⚠️ Pas de client_db_id — incrément ignoré');
+      return;
     }
+
+    // ─── Stratégie : essayer incrementAppels backend (prend client_db_id directement)
+    // ─── Fallback : clientAuth/increment_counter (prend numero, gère alertes seuil)
+    // ─── Retry : 3 tentatives avec backoff exponentiel
+    const maxRetries = 3;
+    const delays = [0, 2000, 5000]; // ms
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      if (delays[attempt] > 0) {
+        console.log(`[APPEL] 🔄 Retry ${attempt + 1}/${maxRetries} après ${delays[attempt]}ms...`);
+        await new Promise(r => setTimeout(r, delays[attempt]));
+      }
+
+      // ─── Tentative principale : incrementAppels backend function ─────────────
+      try {
+        const res = await fetch(`${BASE44_APP_URL}/incrementAppels`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': BASE44_API_KEY },
+          body:    JSON.stringify({ client_db_id: clientDbId }),
+          signal:  AbortSignal.timeout(10000)
+        });
+        const data = await res.json();
+        if (data.ok) {
+          console.log('[APPEL] ✅ Compteurs incrémentés →', `total:${data.appels_total} mois:${data.appels_mois}`);
+          return;
+        }
+        console.warn(`[APPEL] ⚠️ Tentative ${attempt + 1}/${maxRetries} (incrementAppels) échouée:`, JSON.stringify(data));
+      } catch(e) {
+        console.warn(`[APPEL] ⚠️ Exception tentative ${attempt + 1}/${maxRetries} (incrementAppels):`, e.message);
+      }
+
+      // ─── Fallback : clientAuth/increment_counter (au premier échec seulement) ─
+      if (attempt === 0 && cfgData?.numero_twilio) {
+        try {
+          console.log('[APPEL] 🔄 Fallback vers clientAuth/increment_counter...');
+          const res2 = await fetch(`${BASE44_APP_URL}/clientAuth`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': BASE44_API_KEY },
+            body:    JSON.stringify({
+              action: 'increment_counter',
+              numero:  cfgData.numero_twilio
+            }),
+            signal:  AbortSignal.timeout(10000)
+          });
+          const data2 = await res2.json();
+          if (data2.ok) {
+            console.log('[APPEL] ✅ Compteurs incrémentés (fallback) →', `total:${data2.appels_total} mois:${data2.appels_mois} restants:${data2.restants || '?'}${data2.alerte ? ' ⚠️ ALERTE SEUIL' : ''}`);
+            return;
+          }
+          console.warn('[APPEL] ⚠️ Fallback clientAuth aussi échoué:', JSON.stringify(data2));
+        } catch(e2) {
+          console.warn('[APPEL] ⚠️ Exception fallback clientAuth:', e2.message);
+        }
+      }
+    }
+
+    console.error('[APPEL] ❌ ÉCHEC DÉFINITIF — compteur non incrémenté pour client:', clientDbId);
   }
 
   async function flush() {
