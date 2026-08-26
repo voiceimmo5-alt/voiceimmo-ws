@@ -11,11 +11,11 @@
  */
 'use strict';
 
-// Voix valides OpenAI Realtime GA (camille/onyx/nova/etc → coral par défaut)
+// Voix valides OpenAI Realtime GA (camille/onyx/nova/etc → marin par défaut)
 const VALID_OAI_VOICES = ['alloy','ash','ballad','coral','echo','sage','shimmer','verse','marin','cedar'];
 function resolveVoice(v) {
   if (v && VALID_OAI_VOICES.includes(v)) return v;
-  return 'coral'; // fallback féminin
+  return 'marin'; // fallback marin
 }
 
 
@@ -84,7 +84,7 @@ async function fetchHotelConfig(numeroVoxzen) {
     hotel_id: '',
     nom_hotel: 'Hôtel Voxzen',
     langue: 'fr',
-    voix: 'coral',
+    voix: 'marin',
     instructions_ia: '',
     services_actifs: ['chambre', 'restau', 'accueil', 'service'],
     pms_type: '',

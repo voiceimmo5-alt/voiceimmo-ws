@@ -116,8 +116,8 @@ async function getConfig(numTwilio) {
       if (Array.isArray(arr) && arr.length > 0) agents_arr = arr;
     } catch(_) {}
 
-    const VMAP = { coral:'coral', shimmer:'shimmer', alloy:'alloy', echo:'echo', verse:'verse', ash:'ash', sage:'sage', ballad:'ballad' };
-    const voix = VMAP[(client.voix||'coral').toLowerCase()] || 'coral';
+    const VMAP = { marin:'marin', coral:'coral', shimmer:'shimmer', alloy:'alloy', echo:'echo', verse:'verse', ash:'ash', sage:'sage', ballad:'ballad' };
+    const voix = VMAP[(client.voix||'marin').toLowerCase()] || 'marin';
 
     return {
       nom_agence: client.nom_entreprise || DEF_CFG.nom_agence,
@@ -293,7 +293,7 @@ wss.on('connection', (ws, req) => {
     oai.on('open', () => {
       console.log('[OAI] Connecté → session.update');
       const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
-      const voix    = cfg?.voix || 'coral';
+      const voix    = cfg?.voix || 'marin';
 
       oai.send(JSON.stringify({
         type: 'session.update',
