@@ -81,7 +81,7 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 // ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
-const OAI_MODEL = process.env.OAI_MODEL || 'gpt-4o-realtime-preview';
+const OAI_MODEL = process.env.OAI_MODEL || 'gpt-realtime';
 
 // const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
 // const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
