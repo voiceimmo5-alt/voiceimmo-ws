@@ -1378,20 +1378,156 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
     console.warn('[REC] ⚠️ Exception updateLeadRecording:', e.message);
   }
 
+  // ─── Whisper post-appel : transcription propre + extraction lead ─────────
+  try {
+    console.log('[WHISPER] Démarrage transcription post-appel pour CallSid:', CallSid);
+
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken  = process.env.TWILIO_AUTH_TOKEN;
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${RecordingSid}.mp3`;
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+
+    // Télécharger l'audio
+    const audioRes = await fetch(twilioUrl, {
+      headers: { 'Authorization': `Basic ${auth}` },
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!audioRes.ok) {
+      console.warn('[WHISPER] Téléchargement audio échoué:', audioRes.status);
+      throw new Error('Audio download failed');
+    }
+    const audioBuffer = await audioRes.arrayBuffer();
+    console.log('[WHISPER] Audio téléchargé:', audioBuffer.byteLength, 'bytes');
+
+    // Envoyer à Whisper API (multipart/form-data)
+    const formData = new FormData();
+    formData.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'recording.mp3');
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'fr');
+    formData.append('response_format', 'text');
+
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: formData,
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!whisperRes.ok) {
+      const errText = await whisperRes.text();
+      console.warn('[WHISPER] Whisper API échoué:', whisperRes.status, errText.slice(0, 200));
+      throw new Error('Whisper API failed');
+    }
+
+    const whisperText = (await whisperRes.text()).trim();
+    console.log('[WHISPER] Transcription:', whisperText.slice(0, 200));
+
+    // GPT-4o-mini pour structurer (séparer speakers + extraire lead info)
+    const structPrompt = [
+      'Tu es un assistant qui structure des transcriptions d\'appels téléphoniques.',
+      '',
+      'Voici la transcription brute d\'un appel entre une assistante vocale IA nommée "Sophie" et un appelant :',
+      '',
+      '"""',
+      whisperText,
+      '"""',
+      '',
+      'Réponds en JSON valide avec ce format exact :',
+      '{',
+      '  "transcript": "Discussion:\\nSophie: ...\\nClient: ...\\nSophie: ...\\nClient: ...",',
+      '  "nom": "Prénom Nom de l\'appelant ou vide si inconnu",',
+      '  "besoin": "achat/vente/location/estimation ou description courte ou vide",',
+      '  "ville": "ville ou secteur mentionné ou vide",',
+      '  "prix": "budget mentionné ou vide",',
+      '  "reference": "référence du bien mentionnée ou vide"',
+      '}',
+      '',
+      'RÈGLES :',
+      '- Le transcript doit séparer les répliques de Sophie (l\'IA) et de l\'Client (l\'appelant)',
+      '- Sophie pose des questions, l\'Client répond',
+      '- Si tu ne peux pas déterminer qui parle, devine selon le contexte',
+      '- Ne mets AUCUN texte avant ou après le JSON',
+      '- Si une info n\'est pas mentionnée, mets une chaîne vide'
+    ].join('\n');
+
+    const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: structPrompt }],
+        temperature: 0.1,
+        max_tokens: 2000
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!gptRes.ok) {
+      console.warn('[WHISPER] GPT structuring échoué:', gptRes.status);
+      const fallbackTranscript = 'Discussion:\n' + whisperText;
+      await updateLeadWithWhisper(CallSid, fallbackTranscript, '', '', '', '', '');
+    } else {
+      const gptData = await gptRes.json();
+      const gptContent = gptData.choices?.[0]?.message?.content || '';
+      const jsonMatch = gptContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        console.log('[WHISPER] Lead structuré:', JSON.stringify({
+          nom: parsed.nom, besoin: parsed.besoin, ville: parsed.ville, prix: parsed.prix
+        }));
+        await updateLeadWithWhisper(CallSid, parsed.transcript || '', parsed.nom || '', parsed.besoin || '', parsed.ville || '', parsed.prix || '', parsed.reference || '');
+      } else {
+        console.warn('[WHISPER] Pas de JSON dans la réponse GPT, fallback brut');
+        const fallbackTranscript = 'Discussion:\n' + whisperText;
+        await updateLeadWithWhisper(CallSid, fallbackTranscript, '', '', '', '', '');
+      }
+    }
+  } catch(e) {
+    console.warn('[WHISPER] Erreur transcription post-appel:', e.message);
+  }
+
   // Envoyer l'email en attente avec le MP3 en pièce jointe
   const pending = pendingEmails.get(CallSid);
   if (pending) {
     clearTimeout(pending.timer);
     pendingEmails.delete(CallSid);
-    console.log('[EMAIL] 🎙️ Recording reçu — envoi email avec MP3');
+    console.log('[EMAIL] Recording reçu — envoi email avec MP3');
     pending.lead.recording_url = mp3Url;
     await sendEmail(pending.lead, pending.cfg, pending.transcript, mp3Url);
   } else {
-    console.log('[EMAIL] ℹ️ Pas d\'email en attente pour ce callSid:', CallSid);
+    console.log('[EMAIL] Pas d\'email en attente pour ce callSid:', CallSid);
   }
 });
 
-// ─── Route : marquer lead comme Traité depuis email ─────────────────────────
+// ─── Helper : mettre à jour le Lead avec le transcript Whisper ──────────
+async function updateLeadWithWhisper(callSid, transcript, nom, besoin, ville, prix, reference) {
+  try {
+    const res = await fetch(`${BASE44_APP_URL}/updateLeadWhisper`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        call_sid: callSid,
+        transcript,
+        nom,
+        besoin,
+        ville,
+        prix,
+        reference
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
+    const data = await res.json();
+    if (data.ok) console.log('[WHISPER] Lead mis à jour:', data.updatedFields);
+    else console.warn('[WHISPER] updateLeadWhisper:', JSON.stringify(data));
+  } catch(e) {
+    console.warn('[WHISPER] Exception updateLeadWhisper:', e.message);
+  }
+}
+
+// ─── Route : marquer lead comme Traité depuis email// ─── Route : marquer lead comme Traité depuis email ─────────────────────────
 app.get('/mark-lead-done', async (req, res) => {
   const { id } = req.query;
   if (!id) return res.status(400).send('Paramètre manquant');
