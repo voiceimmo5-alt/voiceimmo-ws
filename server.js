@@ -142,7 +142,7 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 // ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
-const OAI_MODEL = process.env.OAI_MODEL || 'gpt-4o-realtime-preview';
+const OAI_MODEL = process.env.OAI_MODEL || 'gpt-realtime';
 
 // const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
 // const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
@@ -171,7 +171,7 @@ const CONFIGS_FALLBACK = {
   '+33939245959': {
     nom_agence:          'LEONE IMMOBILIER',
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
-    voix:                'shimmer',
+    voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour et bienvenue chez Leone Immobilier, comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -185,7 +185,7 @@ const CONFIGS_FALLBACK = {
   '+33939247019': {
     nom_agence:          'LEONE IMMOBILIER (STAGING)',
     client_db_id:        '6a057fa03ad6f7b2ebf4b79e',
-    voix:                'shimmer',
+    voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour, ceci est le serveur de test Leone Immobilier. Comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -234,7 +234,7 @@ function mapClientToConfig(c) {
   return {
     nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
     client_db_id:         c.id || fallback.client_db_id,
-    voix:                 c.voix || fallback.voix || 'shimmer',
+    voix:                 c.voix || fallback.voix || 'marin',
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
     instructions_ia:      c.instructions_ia || null,
@@ -531,7 +531,7 @@ async function handleNewClientOnboarding(obj, customerId, subscriptionId, plan) 
       date_souscription: new Date().toISOString().split('T')[0],
       message_accueil: 'Bonjour, vous êtes bien chez ' + nom_agence + '. Comment puis-je vous aider ?',
       instructions_ia: 'Tu es un assistant téléphonique pour l\'agence ' + nom_agence + '. Réponds de façon professionnelle et chaleureuse.',
-      voix: 'shimmer',
+      voix: 'marin',
       appels_total: 0,
       appels_mois: 0,
       appels_pack: planFinal === 'premium' ? 500 : planFinal === 'pro' ? 200 : 100,
@@ -1105,7 +1105,7 @@ wss.on('connection', (ws, req) => {
             },
             output: {
               format: { type: 'audio/pcmu' },
-              voice: (cfg || DEF_CFG())?.voix || 'shimmer'
+              voice: (cfg || DEF_CFG())?.voix || 'marin'
             }
           }
         }
