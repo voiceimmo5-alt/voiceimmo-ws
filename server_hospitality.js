@@ -339,6 +339,7 @@ wss.on('connection', (ws, req) => {
 
   function connectOAI(callerNum) {
     console.log('[OAI] Connexion OpenAI Realtime...');
+      console.log('[OAI] Model:', OAI_MODEL, '/ Voice:', resolveVoice(cfg?.voix), '/ cfg.voix:', cfg?.voix);
     oai = new WebSocket(
       `wss://api.openai.com/v1/realtime?model=${OAI_MODEL}`,
       ['realtime'],
