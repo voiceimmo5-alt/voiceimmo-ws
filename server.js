@@ -81,7 +81,7 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 // ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
-const OAI_MODEL = process.env.OAI_MODEL || 'gpt-4o-realtime-preview';
+const OAI_MODEL = process.env.OAI_MODEL || 'gpt-realtime';
 
 // const GMAIL_CLIENT_ID    = process.env.GMAIL_CLIENT_ID    || '';
 // const GMAIL_CLIENT_SECRET= process.env.GMAIL_CLIENT_SECRET|| '';
@@ -103,7 +103,8 @@ const CONFIGS_FALLBACK = {
   '+33939245959': {
     nom_agence:          'LEONE IMMOBILIER',
     client_db_id:        '6a0cdf1388a8c7697ae8a452',
-    voix:                'coral',
+    numero_twilio:       '+33939245959',
+    voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour et bienvenue chez Leone Immobilier ! Comment puis-je vous aider aujourd'hui ? Vous souhaitez vendre, acheter, ou louer ?",
     instructions_ia:     null,
@@ -117,7 +118,8 @@ const CONFIGS_FALLBACK = {
   '+33939247019': {
     nom_agence:          'LEONE IMMOBILIER (STAGING)',
     client_db_id:        '6a057fa03ad6f7b2ebf4b79e',
-    voix:                'coral',
+    numero_twilio:       '+33939247019',
+    voix:                'marin',
     site_internet:       'https://www.leone-immobilier.fr',
     message_accueil:     "Bonjour, ceci est le serveur de test Leone Immobilier. Comment puis-je vous aider ?",
     instructions_ia:     null,
@@ -166,7 +168,8 @@ function mapClientToConfig(c) {
   return {
     nom_agence:           c.nom_entreprise || fallback.nom_agence || 'VoiceImmo',
     client_db_id:         c.id || fallback.client_db_id,
-    voix:                 c.voix || fallback.voix || 'coral',
+    numero_twilio:        num || fallback.numero_twilio || '',
+    voix:                 c.voix || fallback.voix || 'marin',
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
     instructions_ia:      c.instructions_ia || null,
@@ -585,27 +588,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v64.11-no-spoken-recap', service: 'VoiceImmo WS', build: '20260709.0902' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v65.0-marin-whisper', service: 'VoiceImmo WS', build: '20260826.2058' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v64.11-no-spoken-recap', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v65.0-marin-whisper', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v64.11-no-spoken-recap' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v65.0-marin-whisper' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v64.11-no-spoken-recap', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v65.0-marin-whisper', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -836,24 +839,65 @@ wss.on('connection', (ws, req) => {
     }
   }
 
-  // ─── Incrémentation compteurs appels ────────────────────────────────────────
+  // ─── Incrémentation compteurs appels (intégrée au squelette, avec retry) ─────
   async function incrementAppels(cfgData) {
-    try {
-      const res = await fetch(`${BASE44_APP_URL}/incrementAppels`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ client_db_id: cfgData?.client_db_id }),
-        signal:  AbortSignal.timeout(15000)
-      });
-      const data = await res.json();
-      if (data.ok) {
-        console.log('[APPEL] ✅ Compteurs incrémentés →', `total:${data.appels_total} mois:${data.appels_mois}`);
-      } else {
-        console.warn('[APPEL] ⚠️ Erreur incrementAppels:', JSON.stringify(data));
-      }
-    } catch(e) {
-      console.warn('[APPEL] ⚠️ Exception incrementAppels:', e.message);
+    const clientDbId = cfgData?.client_db_id;
+    if (!clientDbId) {
+      console.warn('[APPEL] ⚠️ Pas de client_db_id — incrément ignoré');
+      return;
     }
+
+    const maxRetries = 3;
+    const delays = [0, 2000, 5000];
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      if (delays[attempt] > 0) {
+        console.log(`[APPEL] 🔄 Retry ${attempt + 1}/${maxRetries} après ${delays[attempt]}ms...`);
+        await new Promise(r => setTimeout(r, delays[attempt]));
+      }
+
+      try {
+        const res = await fetch(`${BASE44_APP_URL}/incrementAppels`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': BASE44_API_KEY },
+          body:    JSON.stringify({ client_db_id: clientDbId }),
+          signal:  AbortSignal.timeout(10000)
+        });
+        const data = await res.json();
+        if (data.ok) {
+          console.log('[APPEL] ✅ Compteurs incrémentés →', `total:${data.appels_total} mois:${data.appels_mois}`);
+          return;
+        }
+        console.warn(`[APPEL] ⚠️ Tentative ${attempt + 1}/${maxRetries} (incrementAppels) échouée:`, JSON.stringify(data));
+      } catch(e) {
+        console.warn(`[APPEL] ⚠️ Exception tentative ${attempt + 1}/${maxRetries} (incrementAppels):`, e.message);
+      }
+
+      if (attempt === 0 && cfgData?.numero_twilio) {
+        try {
+          console.log('[APPEL] 🔄 Fallback vers clientAuth/increment_counter...');
+          const res2 = await fetch(`${BASE44_APP_URL}/clientAuth`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': BASE44_API_KEY },
+            body:    JSON.stringify({
+              action: 'increment_counter',
+              numero:  cfgData.numero_twilio
+            }),
+            signal:  AbortSignal.timeout(10000)
+          });
+          const data2 = await res2.json();
+          if (data2.ok) {
+            console.log('[APPEL] ✅ Compteurs incrémentés (fallback) →', `total:${data2.appels_total} mois:${data2.appels_mois} restants:${data2.restants || '?'}${data2.alerte ? ' ⚠️ ALERTE SEUIL' : ''}`);
+            return;
+          }
+          console.warn('[APPEL] ⚠️ Fallback clientAuth aussi échoué:', JSON.stringify(data2));
+        } catch(e2) {
+          console.warn('[APPEL] ⚠️ Exception fallback clientAuth:', e2.message);
+        }
+      }
+    }
+
+    console.error('[APPEL] ❌ ÉCHEC DÉFINITIF — compteur non incrémenté pour client:', clientDbId);
   }
 
   async function flush() {
@@ -923,7 +967,7 @@ wss.on('connection', (ws, req) => {
             },
             output: {
               format: { type: 'audio/pcmu' },
-              voice: (cfg || DEF_CFG())?.voix || 'coral'
+              voice: (cfg || DEF_CFG())?.voix || 'marin'
             }
           }
         }
@@ -1329,6 +1373,114 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
     console.warn('[REC] ⚠️ Exception updateLeadRecording:', e.message);
   }
 
+  // ─── Whisper post-appel : transcription propre + extraction lead ─────────
+  try {
+    console.log('[WHISPER] Démarrage transcription post-appel pour CallSid:', CallSid);
+
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken  = process.env.TWILIO_AUTH_TOKEN;
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${RecordingSid}.mp3`;
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+
+    const audioRes = await fetch(twilioUrl, {
+      headers: { 'Authorization': `Basic ${auth}` },
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!audioRes.ok) {
+      console.warn('[WHISPER] Téléchargement audio échoué:', audioRes.status);
+      throw new Error('Audio download failed');
+    }
+    const audioBuffer = await audioRes.arrayBuffer();
+    console.log('[WHISPER] Audio téléchargé:', audioBuffer.byteLength, 'bytes');
+
+    const formData = new FormData();
+    formData.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'recording.mp3');
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'fr');
+    formData.append('response_format', 'text');
+
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: formData,
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!whisperRes.ok) {
+      const errText = await whisperRes.text();
+      console.warn('[WHISPER] Whisper API échoué:', whisperRes.status, errText.slice(0, 200));
+      throw new Error('Whisper API failed');
+    }
+
+    const whisperText = (await whisperRes.text()).trim();
+    console.log('[WHISPER] Transcription:', whisperText.slice(0, 200));
+
+    const structPrompt = [
+      'Tu es un assistant qui structure des transcriptions d\'appels téléphoniques.',
+      '',
+      'Voici la transcription brute d\'un appel entre une assistante vocale IA nommée "Sophie" et un appelant :',
+      '',
+      '"""',
+      whisperText,
+      '"""',
+      '',
+      'Réponds en JSON valide avec ce format exact :',
+      '{',
+      '  "transcript": "Discussion:\\nSophie: ...\\nClient: ...\\nSophie: ...\\nClient: ...",',
+      '  "nom": "Prénom Nom de l\'appelant ou vide si inconnu",',
+      '  "besoin": "achat/vente/location/estimation ou description courte ou vide",',
+      '  "ville": "ville ou secteur mentionné ou vide",',
+      '  "prix": "budget mentionné ou vide",',
+      '  "reference": "référence du bien mentionnée ou vide"',
+      '}',
+      '',
+      'RÈGLES :',
+      '- Le transcript doit séparer les répliques de Sophie (l\'IA) et de l\'Client (l\'appelant)',
+      '- Sophie pose des questions, l\'Client répond',
+      '- Si tu ne peux pas déterminer qui parle, devine selon le contexte',
+      '- Ne mets AUCUN texte avant ou après le JSON',
+      '- Si une info n\'est pas mentionnée, mets une chaîne vide'
+    ].join('\n');
+
+    const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: structPrompt }],
+        temperature: 0.1,
+        max_tokens: 2000
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!gptRes.ok) {
+      console.warn('[WHISPER] GPT structuring échoué:', gptRes.status);
+      const fallbackTranscript = 'Discussion:\n' + whisperText;
+      await updateLeadWithWhisper(CallSid, fallbackTranscript, '', '', '', '', '');
+    } else {
+      const gptData = await gptRes.json();
+      const gptContent = gptData.choices?.[0]?.message?.content || '';
+      const jsonMatch = gptContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        console.log('[WHISPER] Lead structuré:', JSON.stringify({
+          nom: parsed.nom, besoin: parsed.besoin, ville: parsed.ville, prix: parsed.prix
+        }));
+        await updateLeadWithWhisper(CallSid, parsed.transcript || '', parsed.nom || '', parsed.besoin || '', parsed.ville || '', parsed.prix || '', parsed.reference || '');
+      } else {
+        console.warn('[WHISPER] Pas de JSON dans la réponse GPT, fallback brut');
+        const fallbackTranscript = 'Discussion:\n' + whisperText;
+        await updateLeadWithWhisper(CallSid, fallbackTranscript, '', '', '', '', '');
+      }
+    }
+  } catch(e) {
+    console.warn('[WHISPER] Erreur transcription post-appel:', e.message);
+  }
+
   // Envoyer l'email en attente avec le MP3 en pièce jointe
   const pending = pendingEmails.get(CallSid);
   if (pending) {
@@ -1341,6 +1493,31 @@ app.post('/recording-callback', express.urlencoded({ extended: true }), async (r
     console.log('[EMAIL] ℹ️ Pas d\'email en attente pour ce callSid:', CallSid);
   }
 });
+
+// ─── Helper : mettre à jour le Lead avec le transcript Whisper ──────────
+async function updateLeadWithWhisper(callSid, transcript, nom, besoin, ville, prix, reference) {
+  try {
+    const res = await fetch(`${BASE44_APP_URL}/updateLeadWhisper`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        call_sid: callSid,
+        transcript,
+        nom,
+        besoin,
+        ville,
+        prix,
+        reference
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
+    const data = await res.json();
+    if (data.ok) console.log('[WHISPER] Lead mis à jour:', data.updatedFields);
+    else console.warn('[WHISPER] updateLeadWhisper:', JSON.stringify(data));
+  } catch(e) {
+    console.warn('[WHISPER] Exception updateLeadWhisper:', e.message);
+  }
+}
 
 // ─── Route : marquer lead comme Traité depuis email ─────────────────────────
 app.get('/mark-lead-done', async (req, res) => {
