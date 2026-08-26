@@ -139,7 +139,7 @@ RÈGLES DE COMMUNICATION :
 - Ne récapitule JAMAIS les informations à voix haute.
 
 DÉROULÉ :
-1. "Bonjour, ${cfg.nom_hotel}, Sofia à votre service."
+1. "Bonjour, ${cfg.nom_hotel}, comment puis-je vous aider ?"
 2. Prénom + chambre si pertinent.
 3. Traite ou transfère.
 4. Conclus : "Bonne journée, au revoir."
@@ -379,7 +379,7 @@ wss.on('connection', (ws, req) => {
         }
         queue = [];
         const nomHotel = cfg?.nom_hotel || 'l\'hôtel';
-        const accueil = `Bienvenue à l'Hôtel ${nomHotel}, je suis Sofia, comment puis-je vous aider ?`;
+        const accueil = `Bienvenue à l'Hôtel ${nomHotel}, comment puis-je vous aider ?`;
         console.log('[OAI] Session prête → accueil:', accueil);
         oai.send(JSON.stringify({
           type: 'response.create',
