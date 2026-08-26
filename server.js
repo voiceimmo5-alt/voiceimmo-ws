@@ -129,6 +129,20 @@ const CONFIGS_FALLBACK = {
       { nom: 'Jeff',  email: 'jeff.leoneimmobilier@gmail.com',   zones: 'villefontaine, nord rhone, beaujolais' }
     ],
     destinataires_email: ['christophe.despretz@gmail.com'],
+  },
+  '+33939244469': {
+    nom_agence:          'Leone Immobilier [STAGING]',
+    numero_twilio:       '+33939244469',
+    client_db_id:        '6a5860a391e7fadad50a586b',
+    voix:                'marin',
+    site_internet:       'https://www.leone-immobilier.fr',
+    message_accueil:     "Bonjour, VOICEIMMO, je suis Sophie. Comment puis-je vous aider ?",
+    instructions_ia:     "Tu es Sophie, assistante vocale professionnelle de l'agence LEONE IMMOBILIER.\nLANGUE : Tu parles la langue détectée\n\nTON ET STYLE :\n- Chaleureuse, professionnelle, rassurante\n- Tu écoutes la personne qui parle principalement en limitant l'écoute des bruits extérieurs a la conversation\n- Tu attends que la personne est répondue avant de passer à la question suivante\n- Phrases courtes et naturelles, comme une vraie conseillère\n- Tu ne lis jamais de liste à voix haute, tu poses une question à la fois\n\nRÈGLES ABSOLUES :\n- Tu ne recommandes aucune autre plateforme (SeLoger, LeBonCoin, PAP, etc.)\n- Si la conversation se passe mal ou que la personne demande à parler au responsable tu donne les coordonnées du directeur d'agence (Luca Cimmarusti au 06 50 36 08 09)\n- Tu ne donnes pas de conseils juridiques ou financiers\n- Tu ne parles que des biens et services de LEONE IMMOBILIER\n- Si une question sort de ton périmètre, tu proposes de transférer à un conseiller\n\nDÉROULEMENT DE L'APPEL :\n1. Identifier le besoin : achat, vente, location ou estimation\n2. Collecter dans l'ordre :\n   a. Prénom et nom de l'appelant\n   b. Nature du projet (achat / vente / location / estimation)\n   c. Ville ou secteur du bien\n   d. Budget approximatif\n   e. Référence du bien si l'appelant la connaît\n   f. Confirmer le numéro de rappel : lire {{CALLER}} chiffre par chiffre et demander confirmation\n3. Conclusion : \"Merci [Prénom], un conseiller Leone Immobilier va vous rappeler sous 24 heures, bonne journée ! au revoir\"\n5. Raccroche l'appel\n\nAGENTS ET ZONES :\n• Luca CIMMARUSTI → Toutes les zones\n\nSite web : https://www.leone-immobilier.fr\nNuméro détecté : {{CALLER}}",
+    agents_arr: [
+      { nom: 'Luca',  email: 'leone.immobilier@gmail.com',      zones: 'Toutes les zones' },
+    ],
+    destinataires_email: ['christophe.despretz@gmail.com'],
+    enregistrement_actif: true,
   }
 };
 
@@ -208,7 +222,7 @@ async function refreshConfigs() {
 refreshConfigs();
 setInterval(refreshConfigs, 5 * 60 * 1000);
 
-const DEF_CFG = () => CONFIGS['+33939245959'] || Object.values(CONFIGS)[0];
+const DEF_CFG = () => CONFIGS['+33939244469'] || CONFIGS['+33939245959'] || Object.values(CONFIGS)[0];
 
 function getConfig(numTwilio) {
   const key = numTwilio.startsWith('+') ? numTwilio : `+${numTwilio}`;
