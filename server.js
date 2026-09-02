@@ -1078,10 +1078,6 @@ DÉROULEMENT DE LA COMMANDE (strict, dans cet ordre) :
   Phrase de clôture obligatoire : "Merci [Prénom] ! Votre commande est bien enregistrée, elle sera prête dans [X] minutes. À très bientôt !"
 
 ─────────────────────────────────────────────────────────────
-FORMAT DE SORTIE SILENCIEUX (NE JAMAIS PRONONCER À VOIX HAUTE) :
-Après la phrase de clôture, émets silencieusement en dernier token de ta réponse le bloc :
-COMMANDE: NOM=[nom client] | TEL=\${callerNum} | TYPE=[LIVRAISON/EMPORTER] | ADRESSE=[adresse si livraison] | ITEMS=[liste des pizzas+tailles+suppléments, boissons, desserts] | TOTAL=[montant total]€ | HEURE=[heure actuelle HH:MM]
-─────────────────────────────────────────────────────────────
 \${horaires}\${siteWeb}
 Numéro détecté : \${callerNum}
 
@@ -1089,7 +1085,7 @@ Numéro détecté : \${callerNum}
 N'INVENTE JAMAIS un produit, un prix, une disponibilité ou une information. Si tu n'entends pas clairement, NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter ?" et attends.
 
 ## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
-Après la phrase de clôture, tais-toi immédiatement. Pas de ligne technique "COMMANDE:" à voix haute.`;
+Après la phrase de clôture, tais-toi immédiatement.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1235,10 +1231,6 @@ DÉROULEMENT DE L'APPEL (strict, dans cet ordre) :
   "Merci [Prénom], un inspecteur vous recontacte très rapidement. Au revoir !"
 
 ─────────────────────────────────────────────────────────────
-FORMAT DE SORTIE SILENCIEUX (NE JAMAIS PRONONCER À VOIX HAUTE) :
-Après la phrase de clôture, émets silencieusement en dernier token de ta réponse le bloc :
-DEMANDE: NOM=[nom client] | TEL=${callerNum} | SOCIETE=[nom société] | SECTEUR=[secteur activité] | SERVICE=[Contrôle/VGP, Électricité/APSAD, ENR, Formations, Consulting QHSE/RSE, Autre] | DESCRIPTION=[description besoin] | CODE_POSTAL=[code postal] | VILLE=[ville] | URGENCE=[normale/urgente] | EMAIL=[email si fourni]
-─────────────────────────────────────────────────────────────
 ${horaires}${siteWeb}
 Zones d'intervention : ${zonesInter}
 
@@ -1251,11 +1243,11 @@ Numéro détecté : ${callerNum}
 N'INVENTE JAMAIS un nom, une prestation, une adresse, une date ou une information. Si l'audio n'est pas clair (bruit de fond, circulation, voix hachée), NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.
 
 ## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
-Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un contrôle..."). Dis directement et UNIQUEMENT la phrase de clôture prévue, puis tais-toi immédiatement. Pas de ligne technique "DEMANDE:" à voix haute.
+Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un contrôle..."). Dis directement et UNIQUEMENT la phrase de clôture prévue, puis tais-toi immédiatement. 
 
 ## PAS DE BLABLA (OBLIGATOIRE)
 - La phrase de clôture est COURTE. Pas de reformulation, pas de "donc si j'ai bien compris", pas de "pour résumer", pas de répétition des informations collectées.
-- Tu ne redemandes JAMAIS une confirmation globale ("C'est bien tout ce qu'il vous fallait ?", "Avez-vous d'autres questions ?"). Tu dis la phrase de clôture, le bloc DEMANDE silencieux, et tu te tais.
+- Tu ne redemandes JAMAIS une confirmation globale ("C'est bien tout ce qu'il vous fallait ?", "Avez-vous d'autres questions ?"). Tu dis la phrase de clôture, et tu te tais.
 - Tu ne relances JAMAIS avec une question ouverte après la clôture. Pas de "Est-ce que je peux faire autre chose pour vous ?". Tu raccroches.
 - Moins tu parles à la fin, mieux c'est. Une phrase. Point.`;
 }
