@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.15-aurevoir-fix', service: 'VoiceImmo WS', build: '20260808.1530' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.16-controle-extract', service: 'VoiceImmo WS', build: '20260808.1530' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v70.15-aurevoir-fix', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v70.16-controle-extract', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.15-aurevoir-fix' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.16-controle-extract' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v70.15-aurevoir-fix', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v70.16-controle-extract', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1650,7 +1650,14 @@ wss.on('connection', (ws, req) => {
         lead.ville  = demande.ville || demande.code_postal || lead.ville;
         lead.notes  = 'SOCIETE=' + demande.societe + ' | SECTEUR=' + demande.secteur + ' | URGENCE=' + demande.urgence + ' | EMAIL=' + demande.email;
       } else {
-        console.log('[CONTROLE] ℹ️ Aucune demande structurée détectée — fallback sur extraction regex (parseLeadInfo)');
+        console.log('[CONTROLE] ℹ️ Aucune demande structurée détectée — extraction depuis le dialogue naturel');
+        const info = extractControleInfo(transcript);
+        if (info.besoin) lead.besoin = info.besoin;
+        const notesParts = [];
+        if (info.societe) notesParts.push('SOCIETE=' + info.societe);
+        if (info.email)   notesParts.push('EMAIL=' + info.email);
+        if (notesParts.length) lead.notes = notesParts.join(' | ');
+        console.log('[CONTROLE] 📋 Extraction dialogue → société:', info.societe || '(vide)', '| email:', info.email || '(vide)', '| besoin:', info.besoin || '(vide)');
       }
     }
 
@@ -1737,6 +1744,65 @@ function parseDemandeControle(transcript) {
     urgence:      (m[9]||'').trim(),
     email:        (m[10]||'').trim()
   };
+}
+
+// ── CONTROLE : extraction fiable depuis le dialogue naturel (Q Sophie → R Client) ──
+// Le bloc DEMANDE: n'est jamais émis par le modèle (retiré du prompt pour éviter la
+// récitation vocale) → parseDemandeControle retourne toujours null. Cette fonction
+// analyse directement les paires question/réponse du transcript pour extraire
+// société, email et besoin de façon fiable, sans dépendre du modèle.
+function extractControleInfo(transcriptArr) {
+  const info = { societe: '', email: '', besoin: '' };
+  if (!Array.isArray(transcriptArr) || !transcriptArr.length) return info;
+
+  function findNextClientReply(arr, fromIdx) {
+    // Ignore les relances Sophie sans réponse client entre elles (ex: "je n'ai pas bien
+    // entendu, pouvez-vous répéter ?") pour retrouver la vraie première réponse du client
+    let j = fromIdx + 1;
+    while (j < arr.length && arr[j].r === 'a') j++;
+    const parts = [];
+    while (j < arr.length && arr[j].r !== 'a') { parts.push(arr[j].t); j++; }
+    return parts.join(' ').trim();
+  }
+  function cleanReply(text) {
+    const t = (text || '').trim();
+    if (!t) return '';
+    // Filtre les répliques parasites (salutations, accusés de réception) phrase par phrase
+    const parts = t.split(/(?<=[.!?])\s+/).filter(p =>
+      !/^(non|oui|bonjour|d.accord|ok|voilà|c.est ça|c.est bon|ouais|allô)[\s.,!]*$/i.test(p.trim())
+    );
+    return parts.join(' ').replace(/[.]+$/, '').trim();
+  }
+
+  // Email : regex directe sur tout le texte — le plus fiable, peu importe où c'est dit
+  const fullText = transcriptArr.map(e => e.t).join(' ');
+  const emailMatch = fullText.match(/[a-z0-9_.+-]+@[a-z0-9-]+\.[a-z]{2,}/i);
+  if (emailMatch) info.email = emailMatch[0].toLowerCase();
+
+  const qSociete     = /quelle soci[ée]t[ée] appelez|nom de.{0,3}soci[ée]t[ée]/i;
+  const qService     = /quel service souhaitez/i;
+  const qDescription = /d[ée]crire bri[èe]vement votre besoin|type d.{1,3}[ée]quipement à contr[ôo]ler/i;
+
+  let service = '', description = '';
+  for (let i = 0; i < transcriptArr.length; i++) {
+    const e = transcriptArr[i];
+    if (e.r !== 'a') continue;
+    const t = e.t;
+    if (!info.societe && qSociete.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) info.societe = rep;
+    }
+    if (!service && qService.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) service = rep;
+    }
+    if (!description && qDescription.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) description = rep;
+    }
+  }
+  info.besoin = [service, description].filter(Boolean).join(' — ');
+  return info;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
