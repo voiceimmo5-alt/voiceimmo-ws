@@ -1008,9 +1008,7 @@ DÉROULEMENT DE LA COMMANDE (strict, dans cet ordre) :
   Phrase de clôture obligatoire : "Merci [Prénom] ! Votre commande est bien enregistrée, elle sera prête dans [X] minutes. À très bientôt !"
 
 ─────────────────────────────────────────────────────────────
-FORMAT DE SORTIE SILENCIEUX (NE JAMAIS PRONONCER À VOIX HAUTE) :
-Après la phrase de clôture, émets silencieusement en dernier token de ta réponse le bloc :
-COMMANDE: NOM=[nom client] | TEL=\${callerNum} | TYPE=[LIVRAISON/EMPORTER] | ADRESSE=[adresse si livraison] | ITEMS=[liste des pizzas+tailles+suppléments, boissons, desserts] | TOTAL=[montant total]€ | HEURE=[heure actuelle HH:MM]
+FORMAT DE SORTIE : Aucun bloc technique à prononcer. L'extraction des données se fait côté serveur.
 ─────────────────────────────────────────────────────────────
 \${horaires}\${siteWeb}
 Numéro détecté : \${callerNum}
@@ -1019,7 +1017,7 @@ Numéro détecté : \${callerNum}
 N'INVENTE JAMAIS un produit, un prix, une disponibilité ou une information. Si tu n'entends pas clairement, NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter ?" et attends.
 
 ## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
-Après la phrase de clôture, tais-toi immédiatement. Pas de ligne technique "COMMANDE:" à voix haute.`;
+Après la phrase de clôture, tais-toi immédiatement. `;
 }
 
 const SKELETON_BUILDERS = {
