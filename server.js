@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.16-controle-extract', service: 'VoiceImmo WS', build: '20260808.1530' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.17-aurevoir-phrase', service: 'VoiceImmo WS', build: '20260808.1530' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v70.16-controle-extract', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v70.17-aurevoir-phrase', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.16-controle-extract' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.17-aurevoir-phrase' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v70.16-controle-extract', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v70.17-aurevoir-phrase', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1228,8 +1228,8 @@ DÉROULEMENT DE L'APPEL (strict, dans cet ordre) :
 
 ÉTAPE 7 — PHRASE DE CLÔTURE
   Une fois toutes les informations collectées, dis UNIQUEMENT cette phrase, rien d'autre :
-  "Merci [Prénom], un inspecteur vous recontacte très rapidement. Au revoir !"
-  ⚠️ Cette phrase entière est OBLIGATOIRE y compris "Au revoir !" — ne t'arrête JAMAIS avant de l'avoir dit.
+  "Merci [Prénom], un inspecteur vous recontacte très rapidement, au revoir !"
+  ⚠️ Tu dois dire cette phrase EN ENTIER y compris "au revoir" — c'est une seule phrase, ne t'arrête pas avant la fin.
 
 ─────────────────────────────────────────────────────────────
 ${horaires}${siteWeb}
@@ -1602,7 +1602,7 @@ wss.on('connection', (ws, req) => {
         const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement|recontacte très rapidement/i;
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
-          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 2s');
+          console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 4s');
           setTimeout(async () => {
             // 1. API REST Twilio EN PREMIER → raccroche le téléphone physiquement
             await hangupTwilio(callSid);
@@ -1663,7 +1663,7 @@ wss.on('connection', (ws, req) => {
 
 
     await flush();
-          }, 2000);
+          }, 4000);
         }
       }
 
