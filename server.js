@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.17-aurevoir-phrase', service: 'VoiceImmo WS', build: '20260808.1530' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.18-fix-parseleadinfo-pollution', service: 'VoiceImmo WS', build: '20260808.1530' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v70.17-aurevoir-phrase', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v70.18-fix-parseleadinfo-pollution', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.17-aurevoir-phrase' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.18-fix-parseleadinfo-pollution' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v70.17-aurevoir-phrase', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v70.18-fix-parseleadinfo-pollution', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1653,11 +1653,13 @@ wss.on('connection', (ws, req) => {
         console.log('[CONTROLE] ℹ️ Aucune demande structurée détectée — extraction depuis le dialogue naturel');
         const info = extractControleInfo(transcript);
         if (info.besoin) lead.besoin = info.besoin;
+        if (info.nom)    lead.nom = info.nom;
+        if (info.ville)  lead.ville = info.ville;
         const notesParts = [];
         if (info.societe) notesParts.push('SOCIETE=' + info.societe);
         if (info.email)   notesParts.push('EMAIL=' + info.email);
         if (notesParts.length) lead.notes = notesParts.join(' | ');
-        console.log('[CONTROLE] 📋 Extraction dialogue → société:', info.societe || '(vide)', '| email:', info.email || '(vide)', '| besoin:', info.besoin || '(vide)');
+        console.log('[CONTROLE] 📋 Extraction dialogue → nom:', info.nom || '(vide)', '| société:', info.societe || '(vide)', '| email:', info.email || '(vide)', '| ville:', info.ville || '(vide)', '| besoin:', info.besoin || '(vide)');
       }
     }
 
@@ -1690,7 +1692,14 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
         transcript.push({ r: 'u', t: m.transcript });
         console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
-        parseLeadInfo(m.transcript);
+        // ⚠️ parseLeadInfo() utilise des heuristiques taillées pour l'Immo ("je suis X Y",
+        // "recherche à X") qui, avec le flag /i, matchent aussi des phrases banales du
+        // vertical Contrôle (ex: "je suis dans le BTP" → nom="dans le", "recherche à
+        // faire un contrôle" → ville="faire un contrôle..."). On la désactive pour ce
+        // vertical : extractControleInfo() (appelée au flush) fait l'extraction fiable.
+        if ((cfg && cfg.modele_metier) !== 'CONTROLE_REGLEMENTAIRE') {
+          parseLeadInfo(m.transcript);
+        }
 
         // 1ere vraie reponse : on reactive l'auto-reponse VAD (create_response: true)
         if (!firstRealTurnHandled) {
@@ -1752,7 +1761,7 @@ function parseDemandeControle(transcript) {
 // analyse directement les paires question/réponse du transcript pour extraire
 // société, email et besoin de façon fiable, sans dépendre du modèle.
 function extractControleInfo(transcriptArr) {
-  const info = { societe: '', email: '', besoin: '' };
+  const info = { societe: '', email: '', besoin: '', nom: '', ville: '' };
   if (!Array.isArray(transcriptArr) || !transcriptArr.length) return info;
 
   function findNextClientReply(arr, fromIdx) {
@@ -1764,14 +1773,24 @@ function extractControleInfo(transcriptArr) {
     while (j < arr.length && arr[j].r !== 'a') { parts.push(arr[j].t); j++; }
     return parts.join(' ').trim();
   }
+  function findNextAssistantIndex(arr, fromIdx) {
+    for (let j = fromIdx + 1; j < arr.length; j++) if (arr[j].r === 'a') return j;
+    return -1;
+  }
   function cleanReply(text) {
-    const t = (text || '').trim();
+    let t = (text || '').trim();
     if (!t) return '';
     // Filtre les répliques parasites (salutations, accusés de réception) phrase par phrase
     const parts = t.split(/(?<=[.!?])\s+/).filter(p =>
       !/^(non|oui|bonjour|d.accord|ok|voilà|c.est ça|c.est bon|ouais|allô)[\s.,!]*$/i.test(p.trim())
     );
-    return parts.join(' ').replace(/[.]+$/, '').trim();
+    t = parts.join(' ').replace(/[.]+$/, '').trim();
+    // Retire un préfixe filler courant ("c'est X" → "X")
+    t = t.replace(/^c.est\s+/i, '').trim();
+    return t;
+  }
+  function isFillerSociete(s) {
+    return /^(j.appelle au nom de la soci[ée]t[ée]\.?|c.est une soci[ée]t[ée]\.?|au nom de la soci[ée]t[ée]\.?|la soci[ée]t[ée]\.?)$/i.test((s||'').trim());
   }
 
   // Email : regex directe sur tout le texte — le plus fiable, peu importe où c'est dit
@@ -1782,23 +1801,44 @@ function extractControleInfo(transcriptArr) {
   const qSociete     = /quelle soci[ée]t[ée] appelez|nom de.{0,3}soci[ée]t[ée]/i;
   const qService     = /quel service souhaitez/i;
   const qDescription = /d[ée]crire bri[èe]vement votre besoin|type d.{1,3}[ée]quipement à contr[ôo]ler/i;
+  const qLocalisation = /code postal ou la ville|ville du site à contr[ôo]ler/i;
+  const qNom          = /pr[ée]nom et (?:votre |son )?nom/i;
 
+  // NOTE : "dernière réponse valide gagne" (pas la première) — Sophie répète souvent une
+  // question tronquée/interrompue, et la réponse la plus fiable arrive à la relance complète.
   let service = '', description = '';
   for (let i = 0; i < transcriptArr.length; i++) {
     const e = transcriptArr[i];
     if (e.r !== 'a') continue;
     const t = e.t;
-    if (!info.societe && qSociete.test(t)) {
-      const rep = cleanReply(findNextClientReply(transcriptArr, i));
-      if (rep) info.societe = rep;
+    if (qSociete.test(t)) {
+      let rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep && isFillerSociete(rep)) {
+        // Réponse vague ("j'appelle au nom de la société") → le vrai nom arrive souvent
+        // juste après, en réponse décalée à la question suivante (dialogue interrompu)
+        const nextQIdx = findNextAssistantIndex(transcriptArr, i);
+        if (nextQIdx !== -1) {
+          const rep2 = cleanReply(findNextClientReply(transcriptArr, nextQIdx));
+          if (rep2 && !isFillerSociete(rep2) && rep2.split(/\s+/).length <= 5) rep = rep2;
+        }
+      }
+      if (rep && !isFillerSociete(rep)) info.societe = rep;
     }
-    if (!service && qService.test(t)) {
+    if (qService.test(t)) {
       const rep = cleanReply(findNextClientReply(transcriptArr, i));
       if (rep) service = rep;
     }
-    if (!description && qDescription.test(t)) {
+    if (qDescription.test(t)) {
       const rep = cleanReply(findNextClientReply(transcriptArr, i));
       if (rep) description = rep;
+    }
+    if (qLocalisation.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) info.ville = rep;
+    }
+    if (qNom.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) info.nom = rep;
     }
   }
   info.besoin = [service, description].filter(Boolean).join(' — ');
