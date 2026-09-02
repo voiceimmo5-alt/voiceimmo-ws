@@ -647,27 +647,27 @@ async function base44CreateClient(data) {
 }
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
-app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.18-fix-parseleadinfo-pollution', service: 'VoiceImmo WS', build: '20260808.1530' }));
+app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v70.19-fix-race-condition-flush', service: 'VoiceImmo WS', build: '20260808.1530' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v70.18-fix-parseleadinfo-pollution', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v70.19-fix-race-condition-flush', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
-  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.18-fix-parseleadinfo-pollution' });
+  res.json({ logs: LOG_BUFFER.filter(l => l.ts > since).slice(-n), serverTime: Date.now(), version: 'v70.19-fix-race-condition-flush' });
 });
 
 app.get('/stats', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ ok: true, version: 'v70.18-fix-parseleadinfo-pollution', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
+  res.json({ ok: true, version: 'v70.19-fix-race-condition-flush', uptime: Math.floor(process.uptime()), memory: Math.round(process.memoryUsage().heapUsed/1024/1024), oaiOk, gmailOk, node: process.version, serverTime: Date.now(), activeConnections: wss.clients.size, configs: Object.keys(CONFIGS) });
 });
 
 
@@ -1455,6 +1455,54 @@ wss.on('connection', (ws, req) => {
       }
     }
 
+    // ── CONTRÔLE RÉGLEMENTAIRE : enrichissement du lead + dispatch demande ────────
+    // ⚠️ DOIT s'exécuter ICI, avant le snapshot Promise.all ci-dessous — sinon le
+    // lead est sauvegardé vide (race condition corrigée le 02/09/2026, voir commit).
+    const activeCfgForControle = cfg || DEF_CFG();
+    if (activeCfgForControle.modele_metier === 'CONTROLE_REGLEMENTAIRE') {
+      const allTextControle = transcript.map(t => (t.text || t.t || '')).join(' ');
+      const demande = parseDemandeControle(allTextControle);
+      if (demande && demande.nom) {
+        console.log('[CONTROLE] 📋 Demande détectée :', JSON.stringify(demande));
+        const dispatchUrl = activeCfgForControle.regles_dispatch;
+        if (dispatchUrl && dispatchUrl.startsWith('http')) {
+          try {
+            await fetch(dispatchUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                source:         'voxzen_voicebot',
+                organisme:      activeCfgForControle.nom_agence,
+                demande:        demande,
+                timestamp:      new Date().toISOString()
+              })
+            });
+            console.log('[CONTROLE] ✅ Demande dispatchée vers', dispatchUrl);
+          } catch(e) {
+            console.warn('[CONTROLE] ⚠️ Dispatch échoué :', e.message);
+          }
+        } else {
+          console.log('[CONTROLE] ℹ️ Pas de webhook configuré dans regles_dispatch — demande loguée uniquement');
+        }
+        if (demande.nom)  lead.nom = demande.nom;
+        if (demande.tel)  lead.tel = demande.tel;
+        lead.besoin = [demande.service, demande.description].filter(Boolean).join(': ') || lead.besoin;
+        lead.ville  = demande.ville || demande.code_postal || lead.ville;
+        lead.notes  = 'SOCIETE=' + demande.societe + ' | SECTEUR=' + demande.secteur + ' | URGENCE=' + demande.urgence + ' | EMAIL=' + demande.email;
+      } else {
+        console.log('[CONTROLE] ℹ️ Aucune demande structurée détectée — extraction depuis le dialogue naturel');
+        const info = extractControleInfo(transcript);
+        if (info.besoin) lead.besoin = info.besoin;
+        if (info.nom)    lead.nom = info.nom;
+        if (info.ville)  lead.ville = info.ville;
+        const notesParts = [];
+        if (info.societe) notesParts.push('SOCIETE=' + info.societe);
+        if (info.email)   notesParts.push('EMAIL=' + info.email);
+        if (notesParts.length) lead.notes = notesParts.join(' | ');
+        console.log('[CONTROLE] 📋 Extraction dialogue → nom:', info.nom || '(vide)', '| société:', info.societe || '(vide)', '| email:', info.email || '(vide)', '| ville:', info.ville || '(vide)', '| besoin:', info.besoin || '(vide)');
+      }
+    }
+
         await Promise.all([
       (async () => {
         // Stocker l'email en attente — sera envoyé quand le recording arrive (ou timeout 45s)
@@ -1609,62 +1657,12 @@ wss.on('connection', (ws, req) => {
             // 2. Fermer les connexions WebSocket
             hangup();
             // 3. Sauvegarder le lead + envoyer email
-        
-    // ── CONTRÔLE RÉGLEMENTAIRE : dispatch demande d'intervention ──────────────────
-    // FIX (02/09/2026) : le champ 'type_controle' n'existe jamais dans l'objet retourné
-    // par parseDemandeControle() (champs réels : nom, tel, societe, secteur, service,
-    // description, code_postal, ville, urgence, email) → la condition était TOUJOURS fausse,
-    // ce bloc ne s'exécutait jamais. Alignement sur la fiabilité Immo Prod : on enrichit
-    // désormais nom/tel/besoin/ville/notes directement depuis le format structuré DEMANDE:
-    // (prioritaire), avec le fallback parseLeadInfo() en filet de sécurité si absent.
-    const activeCfgForControle = cfg || DEF_CFG();
-    if (activeCfgForControle.modele_metier === 'CONTROLE_REGLEMENTAIRE') {
-      const allTextControle = transcript.map(t => (t.text || t.t || '')).join(' ');
-      const demande = parseDemandeControle(allTextControle);
-      if (demande && demande.nom) {
-        console.log('[CONTROLE] 📋 Demande détectée :', JSON.stringify(demande));
-        const dispatchUrl = activeCfgForControle.regles_dispatch;
-        if (dispatchUrl && dispatchUrl.startsWith('http')) {
-          try {
-            await fetch(dispatchUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                source:         'voxzen_voicebot',
-                organisme:      activeCfgForControle.nom_agence,
-                demande:        demande,
-                timestamp:      new Date().toISOString()
-              })
-            });
-            console.log('[CONTROLE] ✅ Demande dispatchée vers', dispatchUrl);
-          } catch(e) {
-            console.warn('[CONTROLE] ⚠️ Dispatch échoué :', e.message);
-          }
-        } else {
-          console.log('[CONTROLE] ℹ️ Pas de webhook configuré dans regles_dispatch — demande loguée uniquement');
-        }
-        // Enrichir le lead avec les détails de la demande structurée (prioritaire sur le fallback regex)
-        if (demande.nom)  lead.nom = demande.nom;
-        if (demande.tel)  lead.tel = demande.tel;
-        lead.besoin = [demande.service, demande.description].filter(Boolean).join(': ') || lead.besoin;
-        lead.ville  = demande.ville || demande.code_postal || lead.ville;
-        lead.notes  = 'SOCIETE=' + demande.societe + ' | SECTEUR=' + demande.secteur + ' | URGENCE=' + demande.urgence + ' | EMAIL=' + demande.email;
-      } else {
-        console.log('[CONTROLE] ℹ️ Aucune demande structurée détectée — extraction depuis le dialogue naturel');
-        const info = extractControleInfo(transcript);
-        if (info.besoin) lead.besoin = info.besoin;
-        if (info.nom)    lead.nom = info.nom;
-        if (info.ville)  lead.ville = info.ville;
-        const notesParts = [];
-        if (info.societe) notesParts.push('SOCIETE=' + info.societe);
-        if (info.email)   notesParts.push('EMAIL=' + info.email);
-        if (notesParts.length) lead.notes = notesParts.join(' | ');
-        console.log('[CONTROLE] 📋 Extraction dialogue → nom:', info.nom || '(vide)', '| société:', info.societe || '(vide)', '| email:', info.email || '(vide)', '| ville:', info.ville || '(vide)', '| besoin:', info.besoin || '(vide)');
-      }
-    }
-
-
-    await flush();
+            // ⚠️ L'enrichissement CONTROLE (nom/société/email/ville/besoin) se fait
+            // DÉSORMAIS À L'INTÉRIEUR de flush() lui-même (juste avant le snapshot
+            // Promise.all) — pas ici. Raison : hangupTwilio() peut déclencher l'event
+            // 'stop' Twilio qui appelle flush() en concurrence AVANT que ce setTimeout
+            // ne reprenne la main, ce qui sauvegardait un lead vide (race condition).
+            await flush();
           }, 4000);
         }
       }
