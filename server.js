@@ -1316,6 +1316,7 @@ wss.on('connection', (ws, req) => {
   let transcript = [];
   let curAss     = '';
   let botInterrupted = false; // Flag barge-in : bloque l'envoi d'audio vers Twilio
+  let firstRealTurnHandled = false; // évite l'auto-réponse VAD parasite avant la 1ere vraie reponse de l'appelant
   let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
   let cfg        = null;
   let saved      = false;
@@ -1503,7 +1504,7 @@ wss.on('connection', (ws, req) => {
             input: {
               format: { type: 'audio/pcmu' },
               transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
+              turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
             },
             output: {
               format: { type: 'audio/pcmu' },
@@ -1676,6 +1677,15 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'u', t: m.transcript });
         console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
         parseLeadInfo(m.transcript);
+
+        // 1ere vraie reponse : on reactive l'auto-reponse VAD (create_response: true)
+        if (!firstRealTurnHandled) {
+          firstRealTurnHandled = true;
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
+            oai.send(JSON.stringify({ type: 'response.create' }));
+          }
+        }
       }
 
       if (m.type === 'error') console.error('[OAI] Erreur:', JSON.stringify(m.error));
