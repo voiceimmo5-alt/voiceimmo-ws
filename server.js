@@ -1614,11 +1614,17 @@ wss.on('connection', (ws, req) => {
             // 3. Sauvegarder le lead + envoyer email
         
     // ── CONTRÔLE RÉGLEMENTAIRE : dispatch demande d'intervention ──────────────────
+    // FIX (02/09/2026) : le champ 'type_controle' n'existe jamais dans l'objet retourné
+    // par parseDemandeControle() (champs réels : nom, tel, societe, secteur, service,
+    // description, code_postal, ville, urgence, email) → la condition était TOUJOURS fausse,
+    // ce bloc ne s'exécutait jamais. Alignement sur la fiabilité Immo Prod : on enrichit
+    // désormais nom/tel/besoin/ville/notes directement depuis le format structuré DEMANDE:
+    // (prioritaire), avec le fallback parseLeadInfo() en filet de sécurité si absent.
     const activeCfgForControle = cfg || DEF_CFG();
     if (activeCfgForControle.modele_metier === 'CONTROLE_REGLEMENTAIRE') {
       const allTextControle = transcript.map(t => (t.text || t.t || '')).join(' ');
       const demande = parseDemandeControle(allTextControle);
-      if (demande && demande.type_controle) {
+      if (demande && demande.nom) {
         console.log('[CONTROLE] 📋 Demande détectée :', JSON.stringify(demande));
         const dispatchUrl = activeCfgForControle.regles_dispatch;
         if (dispatchUrl && dispatchUrl.startsWith('http')) {
@@ -1640,10 +1646,14 @@ wss.on('connection', (ws, req) => {
         } else {
           console.log('[CONTROLE] ℹ️ Pas de webhook configuré dans regles_dispatch — demande loguée uniquement');
         }
-        // Enrichir le lead avec les détails de la demande pour l'email et la base
-        lead.besoin = demande.service + ': ' + demande.description;
-        lead.ville  = demande.ville || demande.code_postal;
+        // Enrichir le lead avec les détails de la demande structurée (prioritaire sur le fallback regex)
+        if (demande.nom)  lead.nom = demande.nom;
+        if (demande.tel)  lead.tel = demande.tel;
+        lead.besoin = [demande.service, demande.description].filter(Boolean).join(': ') || lead.besoin;
+        lead.ville  = demande.ville || demande.code_postal || lead.ville;
         lead.notes  = 'SOCIETE=' + demande.societe + ' | SECTEUR=' + demande.secteur + ' | URGENCE=' + demande.urgence + ' | EMAIL=' + demande.email;
+      } else {
+        console.log('[CONTROLE] ℹ️ Aucune demande structurée détectée — fallback sur extraction regex (parseLeadInfo)');
       }
     }
 
