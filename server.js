@@ -769,6 +769,7 @@ wss.on('connection', (ws, req) => {
   let cfg        = null;
   let saved      = false;
   let accueilDone = false;
+  let accueilLock = true; // 🛡️ Garde accueil (CR 12/09/2026) : aucun barge-in tant que accueil + question d'ouverture ne sont pas finis
   let firstRealTurnHandled = false; // évite l'auto-réponse VAD parasite (repetition question 1) avant la 1ere vraie reponse de l'appelant
   let callTimer  = null;
 
@@ -1005,6 +1006,13 @@ wss.on('connection', (ws, req) => {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
+        // Failsafe garde accueil : quoi qu'il arrive, le barge-in redevient actif au bout de 25s
+        setTimeout(() => {
+          if (accueilLock) {
+            accueilLock = false;
+            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 25s → barge-in réactivé');
+          }
+        }, 25000);
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
         }
@@ -1060,6 +1068,16 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        // 🛡️ Garde accueil (CR 12/09/2026) : le bruit ne doit JAMAIS couper l'accueil ni la
+        // question d'ouverture. On purge le buffer (le bruit ne devient pas un tour de parole)
+        // mais on n'envoie NI clear Twilio, NI response.cancel — l'accueil joue en entier.
+        if (accueilLock) {
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
+          }
+          console.log('[GARDE-ACCUEIL] 🛡️ Bruit pendant accueil ignoré (buffer purgé, aucune coupure)');
+          return;
+        }
         botInterrupted = true;
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
@@ -1171,6 +1189,12 @@ wss.on('connection', (ws, req) => {
       // Après le message d'accueil + mention enregistrement → on enchaîne IMMÉDIATEMENT
       // (sans attendre l'appelant) sur la première question du déroulement (identifier le besoin).
       // C'est SEULEMENT après cette vraie question qu'on attend la réponse de l'appelant.
+      if (m.type === 'response.done' && accueilDone && accueilLock) {
+        // Fin de la question d'ouverture → le barge-in redevient actif pour toute la conversation
+        accueilLock = false;
+        console.log('[GARDE-ACCUEIL] ✅ Accueil + question d\'ouverture terminés → barge-in réactivé');
+      }
+
       if (m.type === 'response.done' && !accueilDone) {
         accueilDone = true;
         console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture du déroulement');
