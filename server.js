@@ -1000,6 +1000,11 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
+        // 🛡️ Garde accueil (CR 12/09/2026) — racine du fix : on désactive complètement le VAD
+        // côté OpenAI pendant l'accueil, pour empêcher TOUT auto-truncate serveur de l'audio
+        // (pas seulement notre propre clear/cancel). Réactivé à la fin de la question d'ouverture.
+        oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: null } } } }));
+        console.log('[GARDE-ACCUEIL] 🛡️ VAD désactivé pour la durée de l\'accueil');
         let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
         // Injecter la mention RGPD si enregistrement actif
         if (cfg?.enregistrement_actif) {
@@ -1010,7 +1015,10 @@ wss.on('connection', (ws, req) => {
         setTimeout(() => {
           if (accueilLock) {
             accueilLock = false;
-            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 25s → barge-in réactivé');
+            if (oai && oai.readyState === WebSocket.OPEN) {
+              oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
+            }
+            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 25s → VAD + barge-in réactivés');
           }
         }, 25000);
         for (const c of queue) {
@@ -1060,10 +1068,17 @@ wss.on('connection', (ws, req) => {
 
       // ─── Barge-in / Interruption ───────────────────────────────────────
       if (m.type === 'response.output_audio.cancelled' && streamSid) {
-        botInterrupted = true;
-        if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ event: 'clear', streamSid }));
-          console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear + bloque deltas');
+        // 🛡️ Garde accueil (CR 12/09/2026) : OpenAI peut tronquer l'audio côté serveur
+        // (VAD) même sans notre response.cancel — ce 2e chemin de coupure doit aussi
+        // respecter la garde, sinon l'accueil/la mention RGPD se coupe malgré tout.
+        if (accueilLock) {
+          console.log('[GARDE-ACCUEIL] 🛡️ output_audio.cancelled pendant accueil ignoré (pas de clear)');
+        } else {
+          botInterrupted = true;
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ event: 'clear', streamSid }));
+            console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear + bloque deltas');
+          }
         }
       }
 
@@ -1190,9 +1205,12 @@ wss.on('connection', (ws, req) => {
       // (sans attendre l'appelant) sur la première question du déroulement (identifier le besoin).
       // C'est SEULEMENT après cette vraie question qu'on attend la réponse de l'appelant.
       if (m.type === 'response.done' && accueilDone && accueilLock) {
-        // Fin de la question d'ouverture → le barge-in redevient actif pour toute la conversation
+        // Fin de la question d'ouverture → le barge-in ET le VAD redeviennent actifs
         accueilLock = false;
-        console.log('[GARDE-ACCUEIL] ✅ Accueil + question d\'ouverture terminés → barge-in réactivé');
+        if (oai && oai.readyState === WebSocket.OPEN) {
+          oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
+        }
+        console.log('[GARDE-ACCUEIL] ✅ Accueil + question d\'ouverture terminés → VAD + barge-in réactivés');
       }
 
       if (m.type === 'response.done' && !accueilDone) {
