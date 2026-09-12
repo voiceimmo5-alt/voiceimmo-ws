@@ -80,6 +80,12 @@ console.error = (...a) => { origError(...a); pushLog('error', a); };
 
 // ─── Variables d'environnement ───────────────────────────────────────────────
 const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
+
+// 🔧 FIX ROUTAGE CRITIQUE (CR 12/09/2026) : l'env var SERVER_BASE_URL du service staging pointait
+// par erreur vers l'ancien service prod (voiceimmo-ws-production-92c4.up.railway.app, v64.11).
+// Résultat : tous les appels du numéro staging +33939244469 étaient gérés par le VIEUX serveur prod,
+// sans aucun fix. Sur la branche staging, on force TOUJOURS le domaine staging.
+process.env.SERVER_BASE_URL = 'https://ws-staging.voiceimmo.fr';
 // ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
 const OAI_MODEL = process.env.OAI_MODEL || 'gpt-realtime';
 
