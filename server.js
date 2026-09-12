@@ -1011,9 +1011,9 @@ wss.on('connection', (ws, req) => {
         setTimeout(() => {
           if (accueilLock) {
             accueilLock = false;
-            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 25s → mode sourd levé, le bot écoute à nouveau');
+            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 35s → mode sourd levé, le bot écoute à nouveau');
           }
-        }, 25000);
+        }, 35000);
         if (!accueilLock) {
           for (const c of queue) {
             oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
@@ -1027,7 +1027,7 @@ wss.on('connection', (ws, req) => {
             console.error('[EL-TTS] Fallback OpenAI:', e.message);
             oai.send(JSON.stringify({
               type: 'response.create',
-              response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
+              response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter. Prononce le texte EN ENTIER, du premier au dernier mot, sans jamais t'arrêter ni raccourcir, même si tu entends de la parole ou du bruit : "${accueil}"` }
             }));
           });
           // Demander à OpenAI de passer à l'étape 1 sans re-générer l'accueil
