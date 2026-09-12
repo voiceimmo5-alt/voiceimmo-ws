@@ -770,6 +770,7 @@ wss.on('connection', (ws, req) => {
   let saved      = false;
   let accueilDone = false;
   let accueilLock = true; // 🛡️ Garde accueil (CR 12/09/2026) : aucun barge-in tant que accueil + question d'ouverture ne sont pas finis
+  let deafLogged = false; // log unique du mode sourd
   let firstRealTurnHandled = false; // évite l'auto-réponse VAD parasite (repetition question 1) avant la 1ere vraie reponse de l'appelant
   let callTimer  = null;
 
@@ -1000,11 +1001,6 @@ wss.on('connection', (ws, req) => {
 
       if (m.type === 'session.updated' && !ready) {
         ready = true;
-        // 🛡️ Garde accueil (CR 12/09/2026) — racine du fix : on désactive complètement le VAD
-        // côté OpenAI pendant l'accueil, pour empêcher TOUT auto-truncate serveur de l'audio
-        // (pas seulement notre propre clear/cancel). Réactivé à la fin de la question d'ouverture.
-        oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: null } } } }));
-        console.log('[GARDE-ACCUEIL] 🛡️ VAD désactivé pour la durée de l\'accueil');
         let accueil = cfg?.message_accueil || DEF_CFG().message_accueil;
         // Injecter la mention RGPD si enregistrement actif
         if (cfg?.enregistrement_actif) {
@@ -1015,14 +1011,13 @@ wss.on('connection', (ws, req) => {
         setTimeout(() => {
           if (accueilLock) {
             accueilLock = false;
-            if (oai && oai.readyState === WebSocket.OPEN) {
-              oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
-            }
-            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 25s → VAD + barge-in réactivés');
+            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 25s → mode sourd levé, le bot écoute à nouveau');
           }
         }, 25000);
-        for (const c of queue) {
-          oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
+        if (!accueilLock) {
+          for (const c of queue) {
+            oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
+          }
         }
         queue = [];
         if (false /* ElevenLabs désactivé */) {
@@ -1207,10 +1202,7 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'response.done' && accueilDone && accueilLock) {
         // Fin de la question d'ouverture → le barge-in ET le VAD redeviennent actifs
         accueilLock = false;
-        if (oai && oai.readyState === WebSocket.OPEN) {
-          oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
-        }
-        console.log('[GARDE-ACCUEIL] ✅ Accueil + question d\'ouverture terminés → VAD + barge-in réactivés');
+        console.log('[GARDE-ACCUEIL] ✅ Accueil + question d\'ouverture terminés → le bot écoute à nouveau (mode sourd levé)');
       }
 
       if (m.type === 'response.done' && !accueilDone) {
@@ -1370,7 +1362,16 @@ wss.on('connection', (ws, req) => {
       }
     }
     else if (m.event === 'media' && m.media?.payload) {
-      if (oai && oai.readyState === WebSocket.OPEN && ready) {
+      // 🛡️ Garde accueil (CR 12/09/2026) — MODE SOURD : l'audio de l'appelant n'est JAMAIS
+      // transmis à OpenAI tant que l'accueil + la question d'ouverture ne sont pas finis.
+      // Sans audio entrant, le VAD OpenAI ne peut détecter aucune parole → aucune troncature
+      // serveur possible, quel que soit le bruit. Garantie absolue que l'accueil joue en entier.
+      if (accueilLock) {
+        if (!deafLogged) {
+          deafLogged = true;
+          console.log('[GARDE-ACCUEIL] 🤫 Mode sourd actif — audio appelant non transmis pendant l\'accueil');
+        }
+      } else if (oai && oai.readyState === WebSocket.OPEN && ready) {
         oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
       } else if (oai) {
         queue.push(m.media.payload);
