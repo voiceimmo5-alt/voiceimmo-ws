@@ -616,7 +616,7 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.6-verification-rattrapage-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67.7-mention-conditionnelle-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
@@ -779,6 +779,7 @@ wss.on('connection', (ws, req) => {
   // parfois il s'arrête à la 1ère phrase ou génère une réponse muette. On vérifie ce qu'il
   // a réellement dit et on rattrape AVANT de lever la garde. Borné, aucune boucle possible.
   let accueilStage = 0;        // 0=accueil, 1=rattrapage mention, 2=question, 3=fini
+  let mentionRequise = false;   // v67.7 : la mention ne doit être dite/verifiée QUE si enregistrement_actif
   let accueilRetried = false;
   let mentionRetried = false;
   let questionRetried = false;
@@ -1023,6 +1024,8 @@ wss.on('connection', (ws, req) => {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
         accueilText = accueil; // 🛡️ v67.6 : hoisté pour les rattrapages
+        mentionRequise = !!cfg?.enregistrement_actif; // v67.7 : mention conditionnelle
+        console.log('[GARDE-ACCUEIL] Mention RGPD ' + (mentionRequise ? 'REQUISE (enregistrement actif)' : 'NON requise (enregistrement inactif)'));
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         // Failsafe garde accueil : quoi qu'il arrive, le barge-in redevient actif au bout de 25s
         setTimeout(() => {
@@ -1238,7 +1241,7 @@ wss.on('connection', (ws, req) => {
               type: 'response.create',
               response: { instructions: `Dis exactement ceci pour accueillir le client. Prononce le texte EN ENTIER, du premier au dernier mot, sans jamais t'arrêter : "${accueilText}"` }
             }));
-          } else if (!mentionOK && !mentionRetried) {
+          } else if (mentionRequise && !mentionOK && !mentionRetried) {
             mentionRetried = true;
             accueilStage = 1;
             console.log('[GARDE-ACCUEIL] ⚠️ Mention RGPD NON dite (transcript: "' + lastA.slice(0, 60) + '") → rattrapage de la mention');
