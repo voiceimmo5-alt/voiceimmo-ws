@@ -627,7 +627,7 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.8-instrumentation-question-simplifiee-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67.9-lock-sur-fin-de-lecture-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/events', (req, res) => {
@@ -797,6 +797,7 @@ wss.on('connection', (ws, req) => {
   // a réellement dit et on rattrape AVANT de lever la garde. Borné, aucune boucle possible.
   let accueilStage = 0;        // 0=accueil, 1=rattrapage mention, 2=question, 3=fini
   let mentionRequise = false;   // v67.7 : la mention ne doit être dite/verifiée QUE si enregistrement_actif
+  let markTimer = null;        // v67.9 : failsafe si Twilio ne renvoie pas le mark de fin de lecture
   let accueilRetried = false;
   let mentionRetried = false;
   let questionRetried = false;
@@ -1309,9 +1310,25 @@ wss.on('connection', (ws, req) => {
             }));
           } else {
             accueilStage = 3;
-            accueilLock = false;
-            pushEvt(callSid, '🔓 LOCK LEVÉ — accueil+mention+question OK, le bot écoute');
-            console.log('[GARDE-ACCUEIL] ✅ Accueil + mention + question vérifiés → le bot écoute à nouveau (mode sourd levé)');
+            // 🛡️ v67.9 : le modèle génère plus vite que le temps réel — la GENERATION des annonces
+            // est finie mais la LECTURE chez l'appelant continue. On ne lève le mode sourd que
+            // quand Twilio confirme avoir JOUÉ toutes les annonces (événement mark).
+            if (ws.readyState === 1 && streamSid) {
+              ws.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'annoncesFinies' } }));
+              pushEvt(callSid, '📍 génération OK — mark envoyé à Twilio, attente de fin de LECTURE');
+              console.log('[GARDE-ACCUEIL] 📍 Annonces générées — mark envoyé, le sourd se lèvera à la fin de LECTURE chez l\'appelant');
+              markTimer = setTimeout(() => {
+                if (accueilLock) {
+                  accueilLock = false;
+                  pushEvt(callSid, '⏱️ Failsafe mark 12s → lock levé (mark Twilio non reçu)');
+                  console.log('[GARDE-ACCUEIL] ⏱️ Failsafe mark 12s → mode sourd levé');
+                }
+              }, 12000);
+            } else {
+              accueilLock = false;
+              pushEvt(callSid, '🔓 LOCK LEVÉ sans stream Twilio (cas dégénéré)');
+              console.log('[GARDE-ACCUEIL] ✅ Pas de stream Twilio → mode sourd levé directement');
+            }
           }
         }
       }
@@ -1477,6 +1494,15 @@ wss.on('connection', (ws, req) => {
         oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
       } else if (oai) {
         queue.push(m.media.payload);
+      }
+    }
+    else if (m.event === 'mark' && m.mark?.name === 'annoncesFinies') {
+      // 🛡️ v67.9 : Twilio a fini de JOUER toutes les annonces → et seulement maintenant, le bot écoute
+      if (accueilLock) {
+        clearTimeout(markTimer);
+        accueilLock = false;
+        pushEvt(callSid, '🔓 LECTURE DES ANNONCES TERMINÉE (mark Twilio) — le bot écoute');
+        console.log('[GARDE-ACCUEIL] ✅ Mark Twilio reçu : annonces entièrement JOUÉES → le bot écoute à nouveau (mode sourd levé)');
       }
     }
     else if (m.event === 'stop') {
