@@ -191,6 +191,24 @@ async function sendEmail(lead, cfg) {
 
 // ─── Endpoints HTTP ───────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ status: 'ok', version: 'v27-prompt-align-prod', service: 'VoiceImmo WS' }));
+// 📡 v9.0 — Ring buffer d'événements par appel (diagnostic sans accès aux logs Railway)
+const evtRing = new Map(); // callSid → [{t, e}]
+function pushEvt(sid, e) {
+  if (!sid) sid = 'unknown';
+  if (!evtRing.has(sid)) evtRing.set(sid, []);
+  const arr = evtRing.get(sid);
+  arr.push({ t: new Date().toISOString().slice(11, 23), e: String(e).slice(0, 220) });
+  if (arr.length > 200) arr.shift();
+  if (evtRing.size > 8) evtRing.delete(evtRing.keys().next().value);
+}
+
+app.get('/events', (req, res) => {
+  const sid = req.query.sid;
+  if (sid) return res.json({ sid, events: evtRing.get(sid) || [] });
+  const last = [...evtRing.keys()].pop();
+  res.json({ sid: last || null, events: evtRing.get(last) || [] });
+});
+
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
@@ -200,7 +218,7 @@ app.get('/debug', async (req, res) => {
     const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
     oaiOk = r.ok;
   } catch(_) {}
-  res.json({ version: 'v27-prompt-align-prod', hasOAI: hasKey, oaiOk, node: process.version });
+  res.json({ version: 'v9.0-mode-sourd-hospitality', hasOAI: hasKey, oaiOk, node: process.version });
 });
 
 app.get('/logs', (req, res) => {
@@ -258,6 +276,17 @@ wss.on('connection', (ws, req) => {
   let transcript = [];
   let curAss    = '';
   let botInterrupted = false; // Flag barge-in : bloque l'envoi d'audio vers Twilio
+  // ─── v9.0 MODE SOURD + verrou sur fin de lecture (portage staging v67.9/67.10, CR 14/09/2026) ───
+  let accueilLock = true;      // 🤫 mode sourd pendant les annonces
+  let accueilStage = 0;        // 0=accueil, 1=rattrapage mention, 3=terminé
+  let accueilRetried = false;  // accueil muet → renvoi 1x max
+  let mentionRetried = false;  // mention d'enregistrement manquante → rattrapage 1x max
+  let mentionRequise = false;  // mention à dire si enregistrement_actif
+  let markTimer = null;        // failsafe 12s si le mark Twilio ne revient pas
+  let deafLogged = false;
+  let accueilText = '';        // hoisté pour le state machine
+  let audioDeltaCount = 0;     // 📡 v9.0 : deltas audio de la réponse en cours
+
   let firstRealTurnHandled = false; // évite l'auto-réponse VAD parasite avant la 1ere vraie reponse de l'appelant
   let lead      = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
   let cfg       = null;
@@ -304,7 +333,7 @@ wss.on('connection', (ws, req) => {
           voice: voix,
           input_audio_format: 'g711_ulaw',
           output_audio_format: 'g711_ulaw',
-          turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
+          turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
         }
       }));
     });
@@ -316,6 +345,17 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'session.updated' && !ready) {
         ready = true;
         const accueil = cfg?.message_accueil || DEF_CFG.message_accueil;
+        // ─── v9.0 : mention requise + failsafe 35s ───
+        accueilText = accueil;
+        mentionRequise = !!(cfg && cfg.enregistrement_actif);
+        pushEvt(callSid, 'session.updated OK — mention_requise=' + mentionRequise + ' accueil=' + JSON.stringify(String(accueil).slice(0, 60)));
+        setTimeout(() => {
+          if (accueilLock) {
+            accueilLock = false; accueilStage = 3;
+            pushEvt(callSid, '⏱️ Failsafe 35s → mode sourd levé');
+            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 35s → mode sourd levé');
+          }
+        }, 35000);
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 60));
 
         // Drainer queue audio Twilio reçu avant que OAI soit prêt
@@ -333,13 +373,72 @@ wss.on('connection', (ws, req) => {
         }));
       }
 
+      // ─── v9.0 : VÉRIFICATION + RATTRAPAGE des annonces (portage staging v67.6→67.10) ───
+      if (m.type === 'response.done') {
+        const outTypes = (m.response?.output || []).map(o => o.type).join(',');
+        pushEvt(callSid, 'response.done status=' + (m.response?.status || '?') + ' output=[' + (outTypes || 'vide') + '] deltas_audio=' + audioDeltaCount + ' stage=' + accueilStage);
+        audioDeltaCount = 0;
+      }
+      if (m.type === 'response.failed') {
+        pushEvt(callSid, 'response.failed: ' + (m.response?.error?.message || '?').slice(0, 120));
+        audioDeltaCount = 0;
+      }
+      if ((m.type === 'response.done' || m.type === 'response.failed') && accueilStage < 3) {
+        let lastA = '';
+        for (let i = transcript.length - 1; i >= 0; i--) {
+          if (transcript[i].r === 'a') { lastA = transcript[i].t; break; }
+        }
+        const textOK    = String(lastA).trim().length > 10;
+        const mentionOK = /enregistr/i.test(lastA);
+        if (accueilStage <= 1) {
+          if (!textOK && accueilStage === 0 && !accueilRetried) {
+            accueilRetried = true;
+            pushEvt(callSid, 'accueil MUET → renvoi');
+            console.log('[GARDE-ACCUEIL] ⚠️ Accueil muet/inaudible → renvoi de l\'accueil complet');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement ceci pour accueillir le client. Prononce le texte EN ENTIER, du premier au dernier mot, sans jamais t'arrêter : "${accueilText}"` }
+            }));
+          } else if (mentionRequise && !mentionOK && !mentionRetried) {
+            mentionRetried = true;
+            accueilStage = 1;
+            pushEvt(callSid, 'rattrapage MENTION (transcript=' + JSON.stringify(String(lastA).slice(0, 60)) + ')');
+            console.log('[GARDE-ACCUEIL] ⚠️ Mention d\'enregistrement NON dite → rattrapage');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement et uniquement cette phrase, mot pour mot, sans rien ajouter : "Cet appel est susceptible d'être enregistré."` }
+            }));
+          } else {
+            accueilStage = 3;
+            // 🛡️ v9.0 : on ne lève le mode sourd que quand Twilio confirme la fin de LECTURE (mark)
+            if (ws.readyState === 1 && streamSid) {
+              ws.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'annoncesFinies' } }));
+              pushEvt(callSid, '📍 génération OK — mark envoyé à Twilio, attente de fin de LECTURE');
+              console.log('[GARDE-ACCUEIL] 📍 Annonces générées — mark envoyé, le sourd se lèvera à la fin de LECTURE');
+              markTimer = setTimeout(() => {
+                if (accueilLock) {
+                  accueilLock = false;
+                  pushEvt(callSid, '⏱️ Failsafe mark 12s → lock levé (mark non reçu)');
+                  console.log('[GARDE-ACCUEIL] ⏱️ Failsafe mark 12s → mode sourd levé');
+                }
+              }, 12000);
+            } else {
+              accueilLock = false;
+              pushEvt(callSid, '🔓 LOCK LEVÉ sans stream Twilio (cas dégénéré)');
+              console.log('[GARDE-ACCUEIL] ✅ Pas de stream Twilio → mode sourd levé directement');
+            }
+          }
+        }
+      }
+
       // Reset barge-in quand une nouvelle réponse commence
       if (m.type === 'response.created') {
         botInterrupted = false;
       }
 
       // Audio généré par OAI → renvoyer à Twilio
-      if (m.type === 'response.audio.delta' && m.delta && streamSid) {
+      if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        audioDeltaCount++;
         if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (ws.readyState === 1) { // 1 = OPEN
           ws.send(JSON.stringify({
@@ -356,14 +455,31 @@ wss.on('connection', (ws, req) => {
       // 2) Bloquer les deltas en vol (botInterrupted = true)
       // 3) Annuler la réponse OpenAI (response.cancel)
       if (m.type === 'response.output_audio.cancelled' && streamSid) {
+        if (accueilLock) {
+          pushEvt(callSid, '🛡️ output_audio.cancelled pendant annonces ignoré (pas de clear)');
+          console.log('[GARDE-ACCUEIL] 🛡️ output_audio.cancelled pendant annonces ignoré (pas de clear)');
+        } else {
         botInterrupted = true;
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
           console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear Twilio + bloque deltas');
         }
+        }
       }
 
+      if (m.type === 'input_audio_buffer.speech_started') {
+        pushEvt(callSid, 'speech_started (accueilLock=' + accueilLock + ')');
+      }
       if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        if (accueilLock) {
+          // 🛡️ v9.0 : le bruit ne coupe JAMAIS les annonces — buffer purgé, aucun clear, aucun cancel
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
+          }
+          pushEvt(callSid, '🛡️ bruit pendant annonces ignoré (buffer purgé)');
+          console.log('[GARDE-ACCUEIL] 🛡️ Bruit pendant annonces ignoré (buffer purgé, aucune coupure)');
+          return;
+        }
         botInterrupted = true;
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
@@ -398,7 +514,7 @@ wss.on('connection', (ws, req) => {
         if (!firstRealTurnHandled) {
           firstRealTurnHandled = true;
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
             oai.send(JSON.stringify({ type: 'response.create' }));
           }
         }
@@ -459,6 +575,7 @@ wss.on('connection', (ws, req) => {
     6. Confirme le rappel : "${callerNum}" — correct ?
   - PAS de récapitulatif oral. Dis directement : "Merci [Prénom], nous revenons vers vous très rapidement. Bonne journée !"
   - Ne remplis un champ QUE si l'appelant l'a clairement énoncé.`;
+  } // ← v9.0 : accolade de fermeture de buildPrompt MANQUANTE depuis la v27 (bug préexistant, branche cassée en syntaxe)
     // ─── Handler messages Twilio ──────────────────────────────────────────────
   ws.on('message', async (data) => {
     let m;
@@ -497,13 +614,28 @@ wss.on('connection', (ws, req) => {
 
     else if (m.event === 'media' && m.media?.payload) {
       const b64 = m.media.payload;
-      if (oai && oai.readyState === WebSocket.OPEN && ready) {
+      // 🤫 v9.0 MODE SOURD : l'audio de l'appelant n'est pas transmis pendant les annonces
+      if (accueilLock) {
+        if (!deafLogged) {
+          deafLogged = true;
+          console.log('[GARDE-ACCUEIL] 🤫 Mode sourd actif — audio appelant non transmis pendant l\'accueil');
+        }
+      } else if (oai && oai.readyState === WebSocket.OPEN && ready) {
         oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
       } else if (oai) {
         queue.push(b64);
       }
     }
 
+    else if (m.event === 'mark' && m.mark?.name === 'annoncesFinies') {
+      // 🛡️ v9.0 : Twilio a fini de JOUER toutes les annonces → et seulement maintenant, le bot écoute
+      if (accueilLock) {
+        clearTimeout(markTimer);
+        accueilLock = false;
+        pushEvt(callSid, '🔓 LECTURE DES ANNONCES TERMINÉE (mark Twilio) — le bot écoute');
+        console.log('[GARDE-ACCUEIL] ✅ Mark Twilio reçu : annonces entièrement JOUÉES → le bot écoute à nouveau');
+      }
+    }
     else if (m.event === 'stop') {
       console.log(`[WS] STOP — ${transcript.length} échanges`);
       await flush();
