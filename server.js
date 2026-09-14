@@ -267,6 +267,17 @@ async function sendResend(to, subject, html) {
 // ─── Pending emails (attend le recording avant envoi) ───────────────────────
 const pendingEmails = new Map(); // callSid → { lead, cfg, transcript, timer }
 
+// 📡 v67.8 — Ring buffer d'événements par appel (diagnostic : pas d'accès logs Railway)
+const evtRing = new Map(); // callSid → [{t, e}]
+function pushEvt(sid, e) {
+  if (!sid) sid = 'unknown';
+  if (!evtRing.has(sid)) evtRing.set(sid, []);
+  const arr = evtRing.get(sid);
+  arr.push({ t: new Date().toISOString().slice(11, 23), e: String(e).slice(0, 220) });
+  if (arr.length > 200) arr.shift();
+  if (evtRing.size > 8) evtRing.delete(evtRing.keys().next().value);
+}
+
 // ─── Email notification lead ──────────────────────────────────────────────────
 async function sendEmail(lead, cfg, transcript, recordingUrl) {
   if (!RESEND_API_KEY) {
@@ -616,9 +627,15 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.7-mention-conditionnelle-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67.8-instrumentation-question-simplifiee-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
+app.get('/events', (req, res) => {
+  const sid = req.query.sid;
+  if (sid) return res.json({ sid, events: evtRing.get(sid) || [] });
+  const last = [...evtRing.keys()].pop();
+  res.json({ sid: last || null, events: evtRing.get(last) || [] });
+});
 app.get('/logs', (req, res) => {
   const n     = parseInt(req.query.n    || '50');
   const since = parseInt(req.query.since|| '0');
@@ -784,7 +801,8 @@ wss.on('connection', (ws, req) => {
   let mentionRetried = false;
   let questionRetried = false;
   let accueilText = '';         // texte accueil+mention, hoisté pour les rattrapages
-  let QUESTION_OUVERTURE_INSTR = 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas et ne dis pas à nouveau bonjour. Dis EXACTEMENT et UNIQUEMENT cette phrase, mot pour mot, sans rien changer ni ajouter : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?". N\'ajoute AUCUNE formule de transition avant ("d\'accord", "je vais vous aider", etc.) et ne reformule pas la phrase à ta manière. Puis attends réellement la réponse de l\'appelant — ne réponds jamais à sa place.';
+  let QUESTION_OUVERTURE_INSTR = 'Dis exactement, mot pour mot : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?"';
+  let audioDeltaCount = 0; // 📡 v67.8 : compte les deltas audio de la réponse en cours
 
   let accueilLock = true; // 🛡️ Garde accueil (CR 12/09/2026) : aucun barge-in tant que accueil + question d'ouverture ne sont pas finis
   let deafLogged = false; // log unique du mode sourd
@@ -1024,6 +1042,7 @@ wss.on('connection', (ws, req) => {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
         accueilText = accueil; // 🛡️ v67.6 : hoisté pour les rattrapages
+        pushEvt(callSid, 'session.updated OK — mention_requise=' + !!cfg?.enregistrement_actif + ' accueil="' + accueil.slice(0, 60) + '"');
         mentionRequise = !!cfg?.enregistrement_actif; // v67.7 : mention conditionnelle
         console.log('[GARDE-ACCUEIL] Mention RGPD ' + (mentionRequise ? 'REQUISE (enregistrement actif)' : 'NON requise (enregistrement inactif)'));
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
@@ -1072,6 +1091,7 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        audioDeltaCount++;
         if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (true /* ElevenLabs désactivé */) {
           // Fallback : audio OpenAI direct
@@ -1098,6 +1118,15 @@ wss.on('connection', (ws, req) => {
         }
       }
 
+      if (m.type === 'input_audio_buffer.speech_started') {
+        pushEvt(callSid, 'speech_started (accueilLock=' + accueilLock + ')');
+      }
+      if (m.type === 'input_audio_buffer.speech_stopped') {
+        pushEvt(callSid, 'speech_stopped');
+      }
+      if (m.type === 'conversation.item.input_audio_transcription.completed') {
+        pushEvt(callSid, 'transcription="' + String(m.transcript || '').slice(0, 90) + '"');
+      }
       if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
         // 🛡️ Garde accueil (CR 12/09/2026) : le bruit ne doit JAMAIS couper l'accueil ni la
         // question d'ouverture. On purge le buffer (le bruit ne devient pas un tour de parole)
@@ -1224,7 +1253,16 @@ wss.on('connection', (ws, req) => {
       // Le modèle peut s'arrêter à la 1ère phrase, paraphraser, ou rester muet. On vérifie
       // le transcript réel après CHAQUE réponse et on rattrape ce qui manque avant de
       // lever la garde. Borné : 1 retry accueil + 1 rattrapage mention + 1 retry question.
-      if (m.type === 'response.done' && accueilStage < 3) {
+      if (m.type === 'response.done') {
+        const outTypes = (m.response?.output || []).map(o => o.type).join(',');
+        pushEvt(callSid, 'response.done status=' + (m.response?.status || '?') + ' output=[' + (outTypes || 'vide') + '] deltas_audio=' + audioDeltaCount + ' stage=' + accueilStage);
+        audioDeltaCount = 0;
+      }
+      if (m.type === 'response.failed') {
+        pushEvt(callSid, 'response.failed: ' + (m.response?.error?.message || '?').slice(0, 120));
+        audioDeltaCount = 0;
+      }
+      if ((m.type === 'response.done' || m.type === 'response.failed') && accueilStage < 3) {
         let lastA = '';
         for (let i = transcript.length - 1; i >= 0; i--) {
           if (transcript[i].r === 'a') { lastA = transcript[i].t; break; }
@@ -1244,6 +1282,7 @@ wss.on('connection', (ws, req) => {
           } else if (mentionRequise && !mentionOK && !mentionRetried) {
             mentionRetried = true;
             accueilStage = 1;
+            pushEvt(callSid, 'rattrapage MENTION (transcript=' + JSON.stringify(lastA.slice(0, 60)) + ')');
             console.log('[GARDE-ACCUEIL] ⚠️ Mention RGPD NON dite (transcript: "' + lastA.slice(0, 60) + '") → rattrapage de la mention');
             oai.send(JSON.stringify({
               type: 'response.create',
@@ -1262,6 +1301,7 @@ wss.on('connection', (ws, req) => {
           // → réponse = question d'ouverture
           if (!textOK && !questionRetried) {
             questionRetried = true;
+            pushEvt(callSid, 'question MUETTE → renvoi');
             console.log('[GARDE-ACCUEIL] ⚠️ Question d\'ouverture muette → renvoi de la question');
             oai.send(JSON.stringify({
               type: 'response.create',
@@ -1270,6 +1310,7 @@ wss.on('connection', (ws, req) => {
           } else {
             accueilStage = 3;
             accueilLock = false;
+            pushEvt(callSid, '🔓 LOCK LEVÉ — accueil+mention+question OK, le bot écoute');
             console.log('[GARDE-ACCUEIL] ✅ Accueil + mention + question vérifiés → le bot écoute à nouveau (mode sourd levé)');
           }
         }
