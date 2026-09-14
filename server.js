@@ -627,7 +627,7 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.9-lock-sur-fin-de-lecture-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67.10-vad070-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/events', (req, res) => {
@@ -1020,7 +1020,7 @@ wss.on('connection', (ws, req) => {
             input: {
               format: { type: 'audio/pcmu' },
               transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
+              turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
             },
             output: {
               format: { type: 'audio/pcmu' },
@@ -1176,7 +1176,7 @@ wss.on('connection', (ws, req) => {
           // avant la coupure : une réponse parasite démarrait après la clôture et se faisait couper net
           // par notre hangup programmé, au lieu de ne jamais démarrer.
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
           }
           cancelGraceTimer = setTimeout(() => {
             cancelGraceTimer = null;
@@ -1219,7 +1219,7 @@ wss.on('connection', (ws, req) => {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 7s (laisse jouer l\'audio complet)');
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
           }
           scheduleHangup(7000);
           return;
@@ -1345,7 +1345,7 @@ wss.on('connection', (ws, req) => {
         if (!firstRealTurnHandled) {
           firstRealTurnHandled = true;
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
             oai.send(JSON.stringify({ type: 'response.create' }));
           }
         }
