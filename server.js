@@ -589,13 +589,31 @@ async function base44CreateClient(data) {
 
 // ─── Endpoints HTTP ──────────────────────────────────────────────────────────
 app.get('/',       (req, res) => res.json({ status: 'ok', version: 'v65.0-marin-whisper', service: 'VoiceImmo WS', build: '20260826.2058' }));
+// 📡 v9.0 — Ring buffer d'événements par appel (diagnostic sans accès aux logs Railway)
+const evtRing = new Map(); // callSid → [{t, e}]
+function pushEvt(sid, e) {
+  if (!sid) sid = 'unknown';
+  if (!evtRing.has(sid)) evtRing.set(sid, []);
+  const arr = evtRing.get(sid);
+  arr.push({ t: new Date().toISOString().slice(11, 23), e: String(e).slice(0, 220) });
+  if (arr.length > 200) arr.shift();
+  if (evtRing.size > 8) evtRing.delete(evtRing.keys().next().value);
+}
+
+app.get('/events', (req, res) => {
+  const sid = req.query.sid;
+  if (sid) return res.json({ sid, events: evtRing.get(sid) || [] });
+  const last = [...evtRing.keys()].pop();
+  res.json({ sid: last || null, events: evtRing.get(last) || [] });
+});
+
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v65.0-marin-whisper', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v9.0-mode-sourd', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
@@ -750,6 +768,19 @@ wss.on('connection', (ws, req) => {
   let transcript = [];
   let curAss     = '';
   let botInterrupted = false; // Flag barge-in : bloque l'envoi d'audio vers Twilio
+  // ─── v9.0 MODE SOURD + verrou sur fin de lecture (portage staging v67.9/67.10, CR 14/09/2026) ───
+  let accueilLock = true;      // 🤫 mode sourd pendant les annonces
+  let accueilStage = 0;        // 0=accueil, 1=rattrapage mention, 2=question, 3=terminé
+  let accueilRetried = false;  // accueil muet → renvoi 1x max
+  let mentionRetried = false;  // mention RGPD manquante → rattrapage 1x max
+  let questionRetried = false; // question muette → renvoi 1x max (immo)
+  let mentionRequise = false;  // mention RGPD à dire si enregistrement_actif
+  let markTimer = null;        // failsafe 12s si le mark Twilio ne revient pas
+  let deafLogged = false;
+  let accueilText = '';        // hoisté pour le state machine
+  let QUESTION_OUVERTURE_INSTR = 'Dis exactement, mot pour mot : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?"';
+  let audioDeltaCount = 0;     // 📡 v9.0 : deltas audio de la réponse en cours
+
   let lead       = { nom:'', tel:'', besoin:'', agent:'', agentNom:'', ville:'', prix:'', ref:'' };
   let lastQuestion = null; // derniere question posee par Sophie (ville/prix/ref/nom) pour capture brute si reponse en un mot
   let cfg        = null;
@@ -963,7 +994,7 @@ wss.on('connection', (ws, req) => {
             input: {
               format: { type: 'audio/pcmu' },
               transcription: { model: 'gpt-4o-transcribe', language: 'fr' },
-              turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
+              turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false }
             },
             output: {
               format: { type: 'audio/pcmu' },
@@ -985,6 +1016,17 @@ wss.on('connection', (ws, req) => {
         if (cfg?.enregistrement_actif) {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
+        // ─── v9.0 : mention requise + failsafe 35s ───
+        accueilText = accueil;
+        mentionRequise = !!cfg?.enregistrement_actif;
+        pushEvt(callSid, 'session.updated OK — mention_requise=' + mentionRequise + ' accueil=' + JSON.stringify(accueil.slice(0, 60)));
+        setTimeout(() => {
+          if (accueilLock) {
+            accueilLock = false; accueilStage = 3;
+            pushEvt(callSid, '⏱️ Failsafe 35s → mode sourd levé');
+            console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 35s → mode sourd levé');
+          }
+        }, 35000);
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         for (const c of queue) {
           oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: c }));
@@ -1021,6 +1063,7 @@ wss.on('connection', (ws, req) => {
       }
 
       if (m.type === 'response.output_audio.delta' && m.delta && streamSid) {
+        audioDeltaCount++;
         if (botInterrupted) return; // 🛑 Barge-in : ne pas envoyer d'audio pendant interruption
         if (true /* ElevenLabs désactivé */) {
           // Fallback : audio OpenAI direct
@@ -1033,14 +1076,31 @@ wss.on('connection', (ws, req) => {
 
       // ─── Barge-in / Interruption ───────────────────────────────────────
       if (m.type === 'response.output_audio.cancelled' && streamSid) {
+        if (accueilLock) {
+          pushEvt(callSid, '🛡️ output_audio.cancelled pendant annonces ignoré (pas de clear)');
+          console.log('[GARDE-ACCUEIL] 🛡️ output_audio.cancelled pendant annonces ignoré (pas de clear)');
+        } else {
         botInterrupted = true;
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
           console.log('[INTERRUPT] 🛑 output_audio.cancelled → clear + bloque deltas');
         }
+        }
       }
 
+      if (m.type === 'input_audio_buffer.speech_started') {
+        pushEvt(callSid, 'speech_started (accueilLock=' + accueilLock + ')');
+      }
       if (m.type === 'input_audio_buffer.speech_started' && streamSid) {
+        if (accueilLock) {
+          // 🛡️ v9.0 : le bruit ne coupe JAMAIS les annonces — buffer purgé, aucun clear, aucun cancel
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
+          }
+          pushEvt(callSid, '🛡️ bruit pendant annonces ignoré (buffer purgé)');
+          console.log('[GARDE-ACCUEIL] 🛡️ Bruit pendant annonces ignoré (buffer purgé, aucune coupure)');
+          return;
+        }
         botInterrupted = true;
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'clear', streamSid }));
@@ -1078,7 +1138,7 @@ wss.on('connection', (ws, req) => {
           // avant la coupure : une réponse parasite démarrait après la clôture et se faisait couper net
           // par notre hangup programmé, au lieu de ne jamais démarrer.
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
           }
           cancelGraceTimer = setTimeout(() => {
             cancelGraceTimer = null;
@@ -1121,7 +1181,7 @@ wss.on('connection', (ws, req) => {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée (fallback done) → raccrochage dans 7s (laisse jouer l\'audio complet)');
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: false } } } } }));
           }
           scheduleHangup(7000);
           return;
@@ -1152,15 +1212,86 @@ wss.on('connection', (ws, req) => {
       // Après le message d'accueil + mention enregistrement → on enchaîne IMMÉDIATEMENT
       // (sans attendre l'appelant) sur la première question du déroulement (identifier le besoin).
       // C'est SEULEMENT après cette vraie question qu'on attend la réponse de l'appelant.
-      if (m.type === 'response.done' && !accueilDone) {
-        accueilDone = true;
-        console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture du déroulement');
-        oai.send(JSON.stringify({
-          type: 'response.create',
-          response: { instructions: 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas et ne dis pas à nouveau bonjour. Dis EXACTEMENT et UNIQUEMENT cette phrase, mot pour mot, sans rien changer ni ajouter : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?". N\'ajoute AUCUNE formule de transition avant ("d\'accord", "je vais vous aider", etc.) et ne reformule pas la phrase à ta manière. Puis attends réellement la réponse de l\'appelant — ne réponds jamais à sa place.' }
-        }));
+      // ─── v9.0 : VÉRIFICATION + RATTRAPAGE des annonces (portage staging v67.6→67.10) ───
+      if (m.type === 'response.done') {
+        const outTypes = (m.response?.output || []).map(o => o.type).join(',');
+        pushEvt(callSid, 'response.done status=' + (m.response?.status || '?') + ' output=[' + (outTypes || 'vide') + '] deltas_audio=' + audioDeltaCount + ' stage=' + accueilStage);
+        audioDeltaCount = 0;
+      }
+      if (m.type === 'response.failed') {
+        pushEvt(callSid, 'response.failed: ' + (m.response?.error?.message || '?').slice(0, 120));
+        audioDeltaCount = 0;
+      }
+      if ((m.type === 'response.done' || m.type === 'response.failed') && accueilStage < 3) {
+        let lastA = '';
+        for (let i = transcript.length - 1; i >= 0; i--) {
+          if (transcript[i].r === 'a') { lastA = transcript[i].t; break; }
+        }
+        const textOK    = lastA.trim().length > 10;
+        const mentionOK = /enregistr/i.test(lastA);
+        if (accueilStage <= 1) {
+          if (!textOK && accueilStage === 0 && !accueilRetried) {
+            accueilRetried = true;
+            pushEvt(callSid, 'accueil MUET → renvoi');
+            console.log('[GARDE-ACCUEIL] ⚠️ Accueil muet/inaudible → renvoi de l\'accueil complet');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement ceci pour accueillir le client. Prononce le texte EN ENTIER, du premier au dernier mot, sans jamais t'arrêter : "${accueilText}"` }
+            }));
+          } else if (mentionRequise && !mentionOK && !mentionRetried) {
+            mentionRetried = true;
+            accueilStage = 1;
+            pushEvt(callSid, 'rattrapage MENTION (transcript=' + JSON.stringify(lastA.slice(0, 60)) + ')');
+            console.log('[GARDE-ACCUEIL] ⚠️ Mention RGPD NON dite → rattrapage de la mention');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement et uniquement cette phrase, mot pour mot, sans rien ajouter : "${getRecordingMention(cfg?.voix)}"` }
+            }));
+          } else {
+            // Annonces OK → question d'ouverture (immo)
+            accueilStage = 2;
+            console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: QUESTION_OUVERTURE_INSTR }
+            }));
+          }
+        } else if (accueilStage === 2) {
+          // → réponse = question d'ouverture
+          if (!textOK && !questionRetried) {
+            questionRetried = true;
+            pushEvt(callSid, 'question MUETTE → renvoi');
+            console.log('[GARDE-ACCUEIL] ⚠️ Question muette → renvoi');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: QUESTION_OUVERTURE_INSTR }
+            }));
+          } else {            accueilStage = 3;
+            // 🛡️ v9.0 : le modèle génère plus vite que le temps réel — on ne lève le mode sourd
+            // que quand Twilio confirme avoir JOUÉ toutes les annonces (événement mark).
+            if (ws.readyState === 1 && streamSid) {
+              ws.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'annoncesFinies' } }));
+              pushEvt(callSid, '📍 génération OK — mark envoyé à Twilio, attente de fin de LECTURE');
+              console.log('[GARDE-ACCUEIL] 📍 Annonces générées — mark envoyé, le sourd se lèvera à la fin de LECTURE');
+              markTimer = setTimeout(() => {
+                if (accueilLock) {
+                  accueilLock = false;
+                  pushEvt(callSid, '⏱️ Failsafe mark 12s → lock levé (mark non reçu)');
+                  console.log('[GARDE-ACCUEIL] ⏱️ Failsafe mark 12s → mode sourd levé');
+                }
+              }, 12000);
+            } else {
+              accueilLock = false;
+              pushEvt(callSid, '🔓 LOCK LEVÉ sans stream Twilio (cas dégénéré)');
+              console.log('[GARDE-ACCUEIL] ✅ Pas de stream Twilio → mode sourd levé directement');
+            }
+          }
+        }
       }
 
+      if (m.type === 'conversation.item.input_audio_transcription.completed') {
+        pushEvt(callSid, 'transcription=' + JSON.stringify(String(m.transcript || '').slice(0, 90)));
+      }
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
         transcript.push({ r: 'u', t: m.transcript });
         console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
@@ -1173,7 +1304,7 @@ wss.on('connection', (ws, req) => {
         if (!firstRealTurnHandled) {
           firstRealTurnHandled = true;
           if (oai && oai.readyState === WebSocket.OPEN) {
-            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
             oai.send(JSON.stringify({ type: 'response.create' }));
           }
         }
@@ -1309,10 +1440,25 @@ wss.on('connection', (ws, req) => {
       }
     }
     else if (m.event === 'media' && m.media?.payload) {
-      if (oai && oai.readyState === WebSocket.OPEN && ready) {
+      // 🤫 v9.0 MODE SOURD : l'audio de l'appelant n'est pas transmis pendant les annonces
+      if (accueilLock) {
+        if (!deafLogged) {
+          deafLogged = true;
+          console.log('[GARDE-ACCUEIL] 🤫 Mode sourd actif — audio appelant non transmis pendant l\'accueil');
+        }
+      } else if (oai && oai.readyState === WebSocket.OPEN && ready) {
         oai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: m.media.payload }));
       } else if (oai) {
         queue.push(m.media.payload);
+      }
+    }
+    else if (m.event === 'mark' && m.mark?.name === 'annoncesFinies') {
+      // 🛡️ v9.0 : Twilio a fini de JOUER toutes les annonces → et seulement maintenant, le bot écoute
+      if (accueilLock) {
+        clearTimeout(markTimer);
+        accueilLock = false;
+        pushEvt(callSid, '🔓 LECTURE DES ANNONCES TERMINÉE (mark Twilio) — le bot écoute');
+        console.log('[GARDE-ACCUEIL] ✅ Mark Twilio reçu : annonces entièrement JOUÉES → le bot écoute à nouveau');
       }
     }
     else if (m.event === 'stop') {
