@@ -86,6 +86,7 @@ const OPENAI_API_KEY     = process.env.OPENAI_API_KEY     || '';
 // Résultat : tous les appels du numéro staging +33939244469 étaient gérés par le VIEUX serveur prod,
 // sans aucun fix. Sur la branche staging, on force TOUJOURS le domaine staging.
 process.env.SERVER_BASE_URL = 'https://ws-staging.voiceimmo.fr';
+process.env.WS_BASE_URL     = 'https://ws-staging.voiceimmo.fr'; // 🐛 v67.6 : WS_BASE_URL pointait aussi vers le zombie -92c4 (recording_url)
 // ─── Détection automatique du modèle OpenAI Realtime ─────────────────────────
 const OAI_MODEL = process.env.OAI_MODEL || 'gpt-realtime';
 
@@ -615,7 +616,7 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v67.4.1-garde-sourd-staging-173aa8c', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v67.6-verification-rattrapage-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
@@ -774,7 +775,16 @@ wss.on('connection', (ws, req) => {
   let lastQuestion = null; // derniere question posee par Sophie (ville/prix/ref/nom) pour capture brute si reponse en un mot
   let cfg        = null;
   let saved      = false;
-  let accueilDone = false;
+  // 🛡️ v67.6 — Vérification + rattrapage de l'accueil : le modèle est non déterministe,
+  // parfois il s'arrête à la 1ère phrase ou génère une réponse muette. On vérifie ce qu'il
+  // a réellement dit et on rattrape AVANT de lever la garde. Borné, aucune boucle possible.
+  let accueilStage = 0;        // 0=accueil, 1=rattrapage mention, 2=question, 3=fini
+  let accueilRetried = false;
+  let mentionRetried = false;
+  let questionRetried = false;
+  let accueilText = '';         // texte accueil+mention, hoisté pour les rattrapages
+  let QUESTION_OUVERTURE_INSTR = 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas et ne dis pas à nouveau bonjour. Dis EXACTEMENT et UNIQUEMENT cette phrase, mot pour mot, sans rien changer ni ajouter : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?". N\'ajoute AUCUNE formule de transition avant ("d\'accord", "je vais vous aider", etc.) et ne reformule pas la phrase à ta manière. Puis attends réellement la réponse de l\'appelant — ne réponds jamais à sa place.';
+
   let accueilLock = true; // 🛡️ Garde accueil (CR 12/09/2026) : aucun barge-in tant que accueil + question d'ouverture ne sont pas finis
   let deafLogged = false; // log unique du mode sourd
   let firstRealTurnHandled = false; // évite l'auto-réponse VAD parasite (repetition question 1) avant la 1ere vraie reponse de l'appelant
@@ -1012,11 +1022,13 @@ wss.on('connection', (ws, req) => {
         if (cfg?.enregistrement_actif) {
           accueil = injectRecordingMention(accueil, cfg?.voix);
         }
+        accueilText = accueil; // 🛡️ v67.6 : hoisté pour les rattrapages
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         // Failsafe garde accueil : quoi qu'il arrive, le barge-in redevient actif au bout de 25s
         setTimeout(() => {
           if (accueilLock) {
             accueilLock = false;
+            accueilStage = 3;
             console.log('[GARDE-ACCUEIL] ⏱️ Failsafe 35s → mode sourd levé, le bot écoute à nouveau');
           }
         }, 35000);
@@ -1046,7 +1058,7 @@ wss.on('connection', (ws, req) => {
         } else {
           oai.send(JSON.stringify({
             type: 'response.create',
-            response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter : "${accueil}"` }
+            response: { instructions: `Dis exactement ceci pour accueillir le client, une seule fois, sans répéter. Prononce le texte EN ENTIER, du premier au dernier mot, phrase après phrase, sans jamais t'arrêter avant la fin ni raccourcir : "${accueil}"` }
           }));
         }
       }
@@ -1205,19 +1217,59 @@ wss.on('connection', (ws, req) => {
       // Après le message d'accueil + mention enregistrement → on enchaîne IMMÉDIATEMENT
       // (sans attendre l'appelant) sur la première question du déroulement (identifier le besoin).
       // C'est SEULEMENT après cette vraie question qu'on attend la réponse de l'appelant.
-      if (m.type === 'response.done' && accueilDone && accueilLock) {
-        // Fin de la question d'ouverture → le barge-in ET le VAD redeviennent actifs
-        accueilLock = false;
-        console.log('[GARDE-ACCUEIL] ✅ Accueil + question d\'ouverture terminés → le bot écoute à nouveau (mode sourd levé)');
-      }
+      // ─── v67.6 : VÉRIFICATION + RATTRAPAGE de l'accueil/mention/question ──────────
+      // Le modèle peut s'arrêter à la 1ère phrase, paraphraser, ou rester muet. On vérifie
+      // le transcript réel après CHAQUE réponse et on rattrape ce qui manque avant de
+      // lever la garde. Borné : 1 retry accueil + 1 rattrapage mention + 1 retry question.
+      if (m.type === 'response.done' && accueilStage < 3) {
+        let lastA = '';
+        for (let i = transcript.length - 1; i >= 0; i--) {
+          if (transcript[i].r === 'a') { lastA = transcript[i].t; break; }
+        }
+        const textOK    = lastA.trim().length > 10;
+        const mentionOK = /enregistr/i.test(lastA);
 
-      if (m.type === 'response.done' && !accueilDone) {
-        accueilDone = true;
-        console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture du déroulement');
-        oai.send(JSON.stringify({
-          type: 'response.create',
-          response: { instructions: 'L\'accueil et la mention d\'enregistrement ont déjà été dits, ne les répète surtout pas et ne dis pas à nouveau bonjour. Dis EXACTEMENT et UNIQUEMENT cette phrase, mot pour mot, sans rien changer ni ajouter : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?". N\'ajoute AUCUNE formule de transition avant ("d\'accord", "je vais vous aider", etc.) et ne reformule pas la phrase à ta manière. Puis attends réellement la réponse de l\'appelant — ne réponds jamais à sa place.' }
-        }));
+        if (accueilStage <= 1) {
+          // → réponse = accueil (ou son rattrapage)
+          if (!textOK && accueilStage === 0 && !accueilRetried) {
+            accueilRetried = true;
+            console.log('[GARDE-ACCUEIL] ⚠️ Accueil muet/inaudible → renvoi de l\'accueil complet');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement ceci pour accueillir le client. Prononce le texte EN ENTIER, du premier au dernier mot, sans jamais t'arrêter : "${accueilText}"` }
+            }));
+          } else if (!mentionOK && !mentionRetried) {
+            mentionRetried = true;
+            accueilStage = 1;
+            console.log('[GARDE-ACCUEIL] ⚠️ Mention RGPD NON dite (transcript: "' + lastA.slice(0, 60) + '") → rattrapage de la mention');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: `Dis exactement et uniquement cette phrase, mot pour mot, sans rien ajouter : "${getRecordingMention(cfg?.voix)}"` }
+            }));
+          } else {
+            // Mention OK (ou bornes atteintes) → question d'ouverture
+            accueilStage = 2;
+            console.log('[OAI] Accueil + mention terminés → enchaînement sur la question d\'ouverture du déroulement');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: QUESTION_OUVERTURE_INSTR }
+            }));
+          }
+        } else if (accueilStage === 2) {
+          // → réponse = question d'ouverture
+          if (!textOK && !questionRetried) {
+            questionRetried = true;
+            console.log('[GARDE-ACCUEIL] ⚠️ Question d\'ouverture muette → renvoi de la question');
+            oai.send(JSON.stringify({
+              type: 'response.create',
+              response: { instructions: QUESTION_OUVERTURE_INSTR }
+            }));
+          } else {
+            accueilStage = 3;
+            accueilLock = false;
+            console.log('[GARDE-ACCUEIL] ✅ Accueil + mention + question vérifiés → le bot écoute à nouveau (mode sourd levé)');
+          }
+        }
       }
 
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
