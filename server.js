@@ -672,7 +672,7 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v9.0-mode-sourd-controle', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v9.2-controle-cloture', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/logs', (req, res) => {
@@ -1121,18 +1121,20 @@ function buildPromptControle(c, callerNum) {
   // Si vide → utilise le catalogue Covetech-like de démonstration
   let prestationsText = '';
   let zonesText = '';
-  if (c.scraping_format && c.scraping_format.trim()) {
-    try {
-      const cat = JSON.parse(c.scraping_format);
-      if (cat.prestations && cat.prestations.length) {
-        prestationsText = 'PRESTATIONS PROPOSÉES :\n' + cat.prestations.map(p =>
-          `  • ${p.nom} — ${p.description || ''}${p.duree ? ' (durée: ' + p.duree + ')' : ''}`
-        ).join('\n');
-      }
-      if (cat.zones) zonesText = cat.zones;
-    } catch(e) {
-      prestationsText = c.scraping_format;
+  let parsed = null;
+  for (const srcField of [c.scraping_format, c.instructions_ia]) {
+    if (srcField && srcField.trim() && !parsed) {
+      try {
+        const cat = JSON.parse(srcField);
+        if (cat.prestations && cat.prestations.length) parsed = cat;
+      } catch(e) {}
     }
+  }
+  if (parsed) {
+    prestationsText = 'PRESTATIONS PROPOSÉES :\n' + parsed.prestations.map(p =>
+      `  • ${p.nom} — ${p.description || ''}${p.duree ? ' (durée: ' + p.duree + ')' : ''}`
+    ).join('\n');
+    if (parsed.zones) zonesText = parsed.zones;
   } else {
     // Catalogue de démonstration — calqué sur Covetech
     prestationsText = `PRESTATIONS PROPOSÉES :
@@ -1282,6 +1284,13 @@ const SKELETON_BUILDERS = {
 // ─── Prompt Sophie (dispatch multi-modèles métier) ───────────────────────────
 function buildPrompt(c, callerNum) {
   const modele = c.modele_metier || 'IMMO';
+  // v9.2 : le squelette Contrôle PRIME sur les instructions_ia brutes — sinon le parcours
+  // 7 étapes ne s'exécute jamais quand le client a un catalogue (ex: COVETECH) dans
+  // instructions_ia, et le modèle improvise une conclusion prématurée (~74s).
+  if (modele === 'CONTROLE_REGLEMENTAIRE') {
+    console.log('[PROMPT] 🛡️ v9.2 Squelette CONTRÔLE RÉGLEMENTAIRE pour', c.nom_agence, '| caller:', callerNum);
+    return buildPromptControle(c, callerNum);
+  }
   // Priorité 1 : instructions_ia personnalisées depuis la base de données
   if (c.instructions_ia && c.instructions_ia.trim()) {
     let prompt = c.instructions_ia
@@ -1707,7 +1716,7 @@ wss.on('connection', (ws, req) => {
         transcript.push({ r: 'a', t });
         console.log(`[IA] "${t.slice(0, 100)}"`);
         // Détection phrase de fin → raccrocher dans 5s
-        const finPhrases = /au revoir|à bientôt|à très bientôt|bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement|recontacte très rapidement/i;
+        const finPhrases = /au revoir|à bientôt|à très bientôt|bonne journée|bonne soirée|bonne continuation|rappeler très rapidement|recontacte très rapidement/i; // v9.2 : 'bientôt' seul retiré (faux positif mid-dialogue → coupure prématurée)
         if (finPhrases.test(t) && !hangingUp) {
           hangingUp = true;
           console.log('[FIN] ✅ Phrase de fin détectée → raccrochage dans 4s');
