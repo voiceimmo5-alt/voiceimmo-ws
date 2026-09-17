@@ -194,6 +194,10 @@ function mapClientToConfig(c) {
     site_internet:        c.site_internet || fallback.site_internet || '',
     message_accueil:      c.message_accueil || fallback.message_accueil || 'Bonjour, comment puis-je vous aider ?',
     instructions_ia:      c.instructions_ia || null,
+    modele_metier:        c.modele_metier || fallback.modele_metier || 'IMMO',
+    regles_dispatch:      c.regles_dispatch || fallback.regles_dispatch || null,
+    horaires:            c.horaires || fallback.horaires || '',
+    scraping_format:      c.scraping_format || fallback.scraping_format || '',
     agents_arr,
     destinataires_email:  dest,
     enregistrement_actif: c.enregistrement_actif === true,
@@ -627,7 +631,7 @@ app.get('/debug', async (req, res) => {
   let oaiOk = false, gmailOk = false;
   try { const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }); oaiOk = r.ok; } catch(_) {}
   gmailOk = true; // Resend
-  res.json({ version: 'v9.0-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
+  res.json({ version: 'v9.1-controle-staging', hasOAI: !!OPENAI_API_KEY, oaiOk, gmailOk, configs: Object.keys(CONFIGS) });
 });
 
 app.get('/events', (req, res) => {
@@ -719,7 +723,278 @@ function injectRecordingMention(messageAccueil, voix) {
 }
 
 // ─── Prompt Sophie ────────────────────────────────────────────────────────────
+// ═══ v9.1 : SQUELETTE CONTRÔLE RÉGLEMENTAIRE (porté de la branche controle) ═══
+
+function buildPromptControle(c, callerNum) {
+  const recordMention = c.enregistrement_actif ? getRecordingMention(c.voix) : '';
+
+  // Construire le catalogue des prestations depuis le champ scraping_format
+  // Format attendu : JSON { "prestations": [{"nom":"...","description":"...","duree":"..."}], "zones":"..." }
+  // Si vide → utilise le catalogue Covetech-like de démonstration
+  let prestationsText = '';
+  let zonesText = '';
+  // v9.1 : catalogue depuis scraping_format OU instructions_ia (JSON prestations) OU démo
+  let parsed = null;
+  for (const src of [c.scraping_format, c.instructions_ia]) {
+    if (src && src.trim() && !parsed) {
+      try {
+        const cat = JSON.parse(src);
+        if (cat.prestations && cat.prestations.length) parsed = cat;
+      } catch(e) {}
+    }
+  }
+  if (parsed) {
+    prestationsText = 'PRESTATIONS PROPOSÉES :\n' + parsed.prestations.map(p =>
+      `  • ${p.nom} — ${p.description || ''}${p.duree ? ' (durée: ' + p.duree + ')' : ''}`
+    ).join('\n');
+    if (parsed.zones) zonesText = parsed.zones;
+  } else {
+    prestationsText = `PRESTATIONS PROPOSÉES :
+
+1. CONTRÔLE / VGP (Vérifications Générales Périodiques)
+  • Engins de levage (chariots élévateurs, grues, nacelles, palans, treuils) — tous les 6 ou 12 mois selon équipement
+  • Engins de manutention — tous les 6 mois
+  • Engins de terrassement — tous les 12 mois
+  • Compacteurs à déchets — tous les 3 mois
+  • Portes automatiques et motorisées — tous les 6 mois
+  • Ponts élévateurs de véhicule — tous les 12 mois
+  • Accessoires de levage — tous les 12 mois
+
+2. ÉLECTRICITÉ / APSAD
+  • Contrôle et mise en conformité de l'installation électrique
+  • Visites initiales et périodiques (annuel obligatoire si ≥1 salarié et/ou ERP)
+  • Contrôle avant mise sous tension (Consuel)
+  • Délivrance d'attestation Q18 (agrément Apsad)
+
+3. ENR (Énergies Renouvelables)
+  • Contrôle et vérification d'installations ENR
+
+4. FORMATIONS
+  • Autorisation de conduite (chariots, nacelles, grues)
+  • AIPR (Autorisation d'Intervention à Proximité des Réseaux)
+  • Travaux en hauteur
+  • Habilitation électrique
+
+5. CONSULTING QHSE / RSE
+  • Rédaction et mise à jour du DU/DUERP (Document Unique d'Évaluation des Risques Professionnels)
+  • Coordination sécurité incendie
+  • Gestion des déchets dangereux
+  • Gestion des plans de prévention
+
+6. AUTRE — demande spécifique à qualifier par un inspecteur`;
+  }
+
+  const zonesInter = zonesText || (c.agents_arr || []).map(a => a.zones).filter(Boolean).join(', ') || 'toute la France';
+  const horaires = c.horaires ? `\nHoraires d'intervention : ${c.horaires}` : '';
+  const siteWeb  = c.site_internet ? `\nSite web : ${c.site_internet}` : '';
+  const inspecteurs = (c.agents_arr || []).map(a => `• ${a.nom} → spécialité: ${a.zones || 'généraliste'}`).join('\n');
+
+  return `${recordMention}Tu es l'assistante vocale de ${c.nom_agence || 'notre bureau de contrôle'}, un organisme de contrôle et d'inspection réglementaire accrédité.
+LANGUE : Tu parles la langue détectée de l'appelant (français, anglais, espagnol, arabe, etc.) et tu t'adaptes automatiquement.
+
+RÈGLES ABSOLUES :
+- IMPORTANT : le message d'accueil a déjà été prononcé automatiquement. Ne dis JAMAIS "Bonjour" à nouveau — enchaîne DIRECTEMENT sur la qualification du besoin.
+- ⚠️ UNE QUESTION À LA FOIS. Tu poses UNE seule question puis tu TE TAIS et tu LAISSES l'appelant répondre. Tu n'enchaines JAMAIS deux questions d'affilée. Tu n'anticipes JAMAIS la réponse — tu attends que l'appelant ait fini de parler avant de réagir.
+- ⚠️ NE PAS COUPER LA PAROLE. Si l'appelant parle encore, tu attends. Tu ne commences à parler que quand il a fini. Le silence de l'appelant est normal — laisse-lui le temps de réfléchir et de répondre.
+- Tu es professionnelle, rassurante et précise — les appelants peuvent être inquiets (obligations réglementaires, urgence de conformité, sanctions possibles). Sois rassurante sans minimiser les enjeux.
+- Tu NE DONNES JAMAIS de diagnostic technique, de constat, d'avis de conformité ou d'interprétation réglementaire au téléphone — tu qualifies le besoin et planifies une intervention.
+- Tu NE DONNES JAMAIS de tarif ferme au téléphone — tu proposes systématiquement un rappel pour devis.
+- Tu ne mentionnes jamais les sanctions ou amendes potentielles — tu restes neutre sur les obligations légales.
+- N'INVENTE JAMAIS une prestation, un prix, une date de disponibilité ou une information. Si tu ne trouves pas dans les prestations ci-dessous, dis "Je vais vérifier si nous proposons ce type de contrôle, puis-je vous rappeler ?"
+- Si l'appelant a une demande URGENTE (mise en demeure, inspection imminente, sinistre), note-le comme prioritaire et propose un rappel dans la journée.
+
+─────────────────────────────────────────────────────────────
+${prestationsText}
+─────────────────────────────────────────────────────────────
+
+DÉROULEMENT DE L'APPEL (strict, dans cet ordre) :
+
+⚠️ RÈGLE CRITIQUE DE CONVERSATION : Pour CHAQUE étape, tu poses la question, puis tu TE TAIS et tu ATTENDS la réponse de l'appelant. Tu n'enchaines JAMAIS vers l'étape suivante tant que l'appelant n'a pas répondu. Tu ne remplis jamais un champ en supposant la réponse. Si le silence dure, tu peux dire "Vous êtes toujours là ?" mais tu ne supposes JAMAIS la réponse.
+
+ÉTAPE 1 — SECTEUR D'ACTIVITÉ
+  Demande : "Vous appelez pour quel secteur d'activité ?"
+  → Agriculture / Espaces verts
+  → Automobile
+  → BTP / Artisanat
+  → Collectivités
+  → Commerce / Restauration
+  → Commerce de gros / Logistique
+  → Immobilier
+  → Industrie
+  → Santé / Bien-être
+  → Tourisme / Loisirs
+  → Traitement des déchets / Écologie
+  → Services
+  → Autre
+  Note le secteur de l'appelant.
+
+ÉTAPE 2 — SERVICE SOUHAITÉ
+  Demande : "Quel service souhaitez-vous ?"
+  → Contrôle / VGP (engins de levage, manutention, terrassement, portes automatiques, ponts élévateurs)
+  → Électricité / APSAD (contrôle installation électrique, Consuel, attestation Q18)
+  → ENR (énergies renouvelables)
+  → Formations (autorisation de conduite, AIPR, habilitation électrique, travaux en hauteur)
+  → Consulting QHSE / RSE (DUERP, sécurité incendie, déchets dangereux, plans de prévention)
+  → Autre
+  → Si l'appelant ne sait pas : "S'agit-il d'un contrôle obligatoire (VGP, électricité) ou d'une démarche qualité (QHSE, formation) ?"
+
+ÉTAPE 3 — LOCALISATION
+  Demande : "Quel est le code postal ou la ville du site à contrôler ?"
+  → Note la localisation pour le dispatch d'inspecteur
+
+ÉTAPE 4 — SOCIÉTÉ
+  Demande : "Au nom de quelle société appelez-vous ?"
+  → Note le nom de l'entreprise cliente
+  → Si particulier : "Vous appelez à titre personnel ?"
+
+ÉTAPE 5 — DESCRIPTION DU BESOIN
+  Demande : "Pouvez-vous décrire brièvement votre besoin ou le type d'équipement à contrôler ?"
+  → Note les détails (type d'engin, installation électrique, nombre d'équipements, etc.)
+  → Si urgence (mise en demeure, inspection imminente) : note "URGENT"
+
+ÉTAPE 6 — COORDONNÉES
+  Collecte dans cet ordre :
+    1. Prénom et nom de l'appelant
+    2. Confirme le numéro de téléphone en lisant chiffre par chiffre : "${callerNum}" — "C'est bien votre numéro ?"
+    3. Adresse email pour l'envoi du devis (optionnel mais proposer)
+
+ÉTAPE 7 — PHRASE DE CLÔTURE
+  Une fois toutes les informations collectées, dis UNIQUEMENT cette phrase, rien d'autre :
+  "Merci [Prénom], un inspecteur vous recontacte très rapidement, au revoir !"
+  ⚠️ Tu dois dire cette phrase EN ENTIER y compris "au revoir" — c'est une seule phrase, ne t'arrête pas avant la fin.
+
+─────────────────────────────────────────────────────────────
+${horaires}${siteWeb}
+Zones d'intervention : ${zonesInter}
+
+INSPECTEURS :
+${inspecteurs || '(à définir)'}
+
+Numéro détecté : ${callerNum}
+
+## GARDE-FOU ANTI-HALLUCINATION (OBLIGATOIRE)
+N'INVENTE JAMAIS un nom, une prestation, une adresse, une date ou une information. Si l'audio n'est pas clair (bruit de fond, circulation, voix hachée), NE DEVINE PAS : dis "Je n'ai pas bien entendu, pouvez-vous répéter s'il vous plaît ?" et attends une vraie réponse avant de continuer. Ne remplis un champ QUE si l'appelant l'a clairement et explicitement énoncé lui-même dans cet appel.
+
+## NE JAMAIS RÉCAPITULER AVANT RACCROCHAGE (OBLIGATOIRE)
+Ne récapitule JAMAIS les informations collectées à voix haute avant de raccrocher (pas de "donc c'est bien M./Mme X, pour un contrôle..."). Dis directement et UNIQUEMENT la phrase de clôture prévue, puis tais-toi immédiatement. 
+
+## PAS DE BLABLA (OBLIGATOIRE)
+- La phrase de clôture est COURTE. Pas de reformulation, pas de "donc si j'ai bien compris", pas de "pour résumer", pas de répétition des informations collectées.
+- Tu ne redemandes JAMAIS une confirmation globale ("C'est bien tout ce qu'il vous fallait ?", "Avez-vous d'autres questions ?"). Tu dis la phrase de clôture, et tu te tais.
+- Tu ne relances JAMAIS avec une question ouverte après la clôture. Pas de "Est-ce que je peux faire autre chose pour vous ?". Tu raccroches.
+- Moins tu parles à la fin, mieux c'est. Une phrase. Point.`;
+}
+
+function parseDemandeControle(transcript) {
+  // Cherche le bloc DEMANDE: émis silencieusement par le modèle en dernier token
+  const fullText = Array.isArray(transcript) ? transcript.join(' ') : transcript;
+  const m = fullText.match(/DEMANDE:\s*NOM=([^|]+)\|\s*TEL=([^|]+)\|\s*SOCIETE=([^|]*)\|\s*SECTEUR=([^|]*)\|\s*SERVICE=([^|]*)\|\s*DESCRIPTION=([^|]*)\|\s*CODE_POSTAL=([^|]*)\|\s*VILLE=([^|]*)\|\s*URGENCE=([^|]+)\|\s*EMAIL=([^\n\r]*)/i);
+  if (!m) return null;
+  return {
+    nom:          (m[1]||'').trim(),
+    tel:          (m[2]||'').trim(),
+    societe:      (m[3]||'').trim(),
+    secteur:      (m[4]||'').trim(),
+    service:      (m[5]||'').trim(),
+    description:  (m[6]||'').trim(),
+    code_postal:  (m[7]||'').trim(),
+    ville:        (m[8]||'').trim(),
+    urgence:      (m[9]||'').trim(),
+    email:        (m[10]||'').trim()
+  };
+}
+
+function extractControleInfo(transcriptArr) {
+  const info = { societe: '', email: '', besoin: '', nom: '', ville: '' };
+  if (!Array.isArray(transcriptArr) || !transcriptArr.length) return info;
+
+  function findNextClientReply(arr, fromIdx) {
+    // Ignore les relances Sophie sans réponse client entre elles (ex: "je n'ai pas bien
+    // entendu, pouvez-vous répéter ?") pour retrouver la vraie première réponse du client
+    let j = fromIdx + 1;
+    while (j < arr.length && arr[j].r === 'a') j++;
+    const parts = [];
+    while (j < arr.length && arr[j].r !== 'a') { parts.push(arr[j].t); j++; }
+    return parts.join(' ').trim();
+  }
+  function findNextAssistantIndex(arr, fromIdx) {
+    for (let j = fromIdx + 1; j < arr.length; j++) if (arr[j].r === 'a') return j;
+    return -1;
+  }
+  function cleanReply(text) {
+    let t = (text || '').trim();
+    if (!t) return '';
+    // Filtre les répliques parasites (salutations, accusés de réception) phrase par phrase
+    const parts = t.split(/(?<=[.!?])\s+/).filter(p =>
+      !/^(non|oui|bonjour|d.accord|ok|voilà|c.est ça|c.est bon|ouais|allô)[\s.,!]*$/i.test(p.trim())
+    );
+    t = parts.join(' ').replace(/[.]+$/, '').trim();
+    // Retire un préfixe filler courant ("c'est X" → "X")
+    t = t.replace(/^c.est\s+/i, '').trim();
+    return t;
+  }
+  function isFillerSociete(s) {
+    return /^(j.appelle au nom de la soci[ée]t[ée]\.?|c.est une soci[ée]t[ée]\.?|au nom de la soci[ée]t[ée]\.?|la soci[ée]t[ée]\.?)$/i.test((s||'').trim());
+  }
+
+  // Email : regex directe sur tout le texte — le plus fiable, peu importe où c'est dit
+  const fullText = transcriptArr.map(e => e.t).join(' ');
+  const emailMatch = fullText.match(/[a-z0-9_.+-]+@[a-z0-9-]+\.[a-z]{2,}/i);
+  if (emailMatch) info.email = emailMatch[0].toLowerCase();
+
+  const qSociete     = /quelle soci[ée]t[ée] appelez|nom de.{0,3}soci[ée]t[ée]/i;
+  const qService     = /quel service souhaitez/i;
+  const qDescription = /d[ée]crire bri[èe]vement votre besoin|type d.{1,3}[ée]quipement à contr[ôo]ler/i;
+  const qLocalisation = /code postal ou la ville|ville du site à contr[ôo]ler/i;
+  const qNom          = /pr[ée]nom et (?:votre |son )?nom/i;
+
+  // NOTE : "dernière réponse valide gagne" (pas la première) — Sophie répète souvent une
+  // question tronquée/interrompue, et la réponse la plus fiable arrive à la relance complète.
+  let service = '', description = '';
+  for (let i = 0; i < transcriptArr.length; i++) {
+    const e = transcriptArr[i];
+    if (e.r !== 'a') continue;
+    const t = e.t;
+    if (qSociete.test(t)) {
+      let rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep && isFillerSociete(rep)) {
+        // Réponse vague ("j'appelle au nom de la société") → le vrai nom arrive souvent
+        // juste après, en réponse décalée à la question suivante (dialogue interrompu)
+        const nextQIdx = findNextAssistantIndex(transcriptArr, i);
+        if (nextQIdx !== -1) {
+          const rep2 = cleanReply(findNextClientReply(transcriptArr, nextQIdx));
+          if (rep2 && !isFillerSociete(rep2) && rep2.split(/\s+/).length <= 5) rep = rep2;
+        }
+      }
+      if (rep && !isFillerSociete(rep)) info.societe = rep;
+    }
+    if (qService.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) service = rep;
+    }
+    if (qDescription.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) description = rep;
+    }
+    if (qLocalisation.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) info.ville = rep;
+    }
+    if (qNom.test(t)) {
+      const rep = cleanReply(findNextClientReply(transcriptArr, i));
+      if (rep) info.nom = rep;
+    }
+  }
+  info.besoin = [service, description].filter(Boolean).join(' — ');
+  return info;
+}
+
 function buildPrompt(c, callerNum) {
+  // v9.1 : vertical Contrôle Réglementaire → squelette dédié (parcours 7 étapes, clôture stricte)
+  if ((c.modele_metier || 'IMMO') === 'CONTROLE_REGLEMENTAIRE') {
+    console.log('[PROMPT] 🛡️ Squelette CONTRÔLE RÉGLEMENTAIRE pour', c.nom_agence, '| caller:', callerNum);
+    return buildPromptControle(c, callerNum);
+  }
   // Priorité 1 : instructions_ia personnalisées depuis la base de données
   if (c.instructions_ia && c.instructions_ia.trim()) {
     let prompt = c.instructions_ia
@@ -804,6 +1079,26 @@ wss.on('connection', (ws, req) => {
   let accueilText = '';         // texte accueil+mention, hoisté pour les rattrapages
   let QUESTION_OUVERTURE_INSTR = 'Dis exactement, mot pour mot : "Vous souhaitez des renseignements pour un achat, une vente, une location, ou une estimation ?"';
   let audioDeltaCount = 0; // 📡 v67.8 : compte les deltas audio de la réponse en cours
+
+  // 📍 v9.1 : envoi du mark 'annoncesFinies' — le mode sourd ne se lève qu'à la fin de LECTURE Twilio
+  function envoyerMarkAnnonces() {
+    if (ws.readyState === 1 && streamSid) {
+      ws.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'annoncesFinies' } }));
+      pushEvt(callSid, '📍 génération OK — mark envoyé à Twilio, attente de fin de LECTURE');
+      console.log('[GARDE-ACCUEIL] 📍 Annonces générées — mark envoyé, le sourd se lèvera à la fin de LECTURE chez l\'appelant');
+      markTimer = setTimeout(() => {
+        if (accueilLock) {
+          accueilLock = false;
+          pushEvt(callSid, '⏱️ Failsafe mark 12s → lock levé (mark Twilio non reçu)');
+          console.log('[GARDE-ACCUEIL] ⏱️ Failsafe mark 12s → mode sourd levé');
+        }
+      }, 12000);
+    } else {
+      accueilLock = false;
+      pushEvt(callSid, '🔓 LOCK LEVÉ sans stream Twilio (cas dégénéré)');
+      console.log('[GARDE-ACCUEIL] ✅ Pas de stream Twilio → mode sourd levé directement');
+    }
+  }
 
   let accueilLock = true; // 🛡️ Garde accueil (CR 12/09/2026) : aucun barge-in tant que accueil + question d'ouverture ne sont pas finis
   let deafLogged = false; // log unique du mode sourd
@@ -966,6 +1261,42 @@ wss.on('connection', (ws, req) => {
     }
     hangup();
     const activeCfg = cfg || DEF_CFG();
+
+    // ── v9.1 CONTRÔLE RÉGLEMENTAIRE : enrichissement du lead AVANT sauvegarde ─────
+    if ((activeCfg.modele_metier || 'IMMO') === 'CONTROLE_REGLEMENTAIRE') {
+      const allTextControle = transcript.map(t => (t.t || '')).join(' ');
+      const demande = parseDemandeControle(allTextControle);
+      if (demande && demande.nom) {
+        console.log('[CONTROLE] 📋 Demande structurée détectée :', JSON.stringify(demande));
+        const dispatchUrl = activeCfg.regles_dispatch;
+        if (dispatchUrl && String(dispatchUrl).startsWith('http')) {
+          fetch(dispatchUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: 'voxzen_voicebot', organisme: activeCfg.nom_agence, demande: demande, timestamp: new Date().toISOString() })
+          }).then(() => console.log('[CONTROLE] ✅ Demande dispatchée vers', dispatchUrl))
+            .catch(e => console.warn('[CONTROLE] ⚠️ Dispatch échoué :', e.message));
+        }
+        if (demande.nom)  lead.nom = demande.nom;
+        if (demande.tel)  lead.tel = demande.tel;
+        lead.besoin = [demande.service, demande.description].filter(Boolean).join(': ') || lead.besoin;
+        lead.ville  = demande.ville || demande.code_postal || lead.ville;
+        if (demande.societe) lead.besoin += ' | Société: ' + demande.societe;
+        if (demande.email)   lead.besoin += ' | Email: ' + demande.email;
+      } else {
+        console.log('[CONTROLE] ℹ️ Pas de bloc DEMANDE: — extraction depuis le dialogue naturel');
+        const info = extractControleInfo(transcript);
+        if (info.besoin) lead.besoin = info.besoin;
+        if (info.nom)    lead.nom = info.nom;
+        if (info.ville)  lead.ville = info.ville;
+        const extras = [];
+        if (info.societe) extras.push('Société: ' + info.societe);
+        if (info.email)   extras.push('Email: ' + info.email);
+        if (extras.length) lead.besoin = (lead.besoin || '') + (lead.besoin ? ' | ' : '') + extras.join(' | ');
+        console.log('[CONTROLE] 📋 Extraction dialogue → nom:', info.nom || '(vide)', '| société:', info.societe || '(vide)', '| email:', info.email || '(vide)');
+      }
+    }
+
     await Promise.all([
       (async () => {
         // Stocker l'email en attente — sera envoyé quand le recording arrive (ou timeout 45s)
@@ -1044,7 +1375,9 @@ wss.on('connection', (ws, req) => {
         }
         accueilText = accueil; // 🛡️ v67.6 : hoisté pour les rattrapages
         pushEvt(callSid, 'session.updated OK — mention_requise=' + !!cfg?.enregistrement_actif + ' accueil="' + accueil.slice(0, 60) + '"');
-        mentionRequise = !!cfg?.enregistrement_actif; // v67.7 : mention conditionnelle
+        mentionRequise = !!cfg?.enregistrement_actif;
+        // v9.1 : le vertical Contrôle n'a PAS de question d'ouverture forcée — son accueil finit déjà par "comment puis-je vous aider ?"
+        QUESTION_OUVERTURE_INSTR = ((cfg && cfg.modele_metier) === 'CONTROLE_REGLEMENTAIRE') ? '' : QUESTION_OUVERTURE_INSTR; // v67.7 : mention conditionnelle
         console.log('[GARDE-ACCUEIL] Mention RGPD ' + (mentionRequise ? 'REQUISE (enregistrement actif)' : 'NON requise (enregistrement inactif)'));
         console.log('[OAI] Session prête → accueil:', accueil.slice(0, 80));
         // Failsafe garde accueil : quoi qu'il arrive, le barge-in redevient actif au bout de 25s
@@ -1289,6 +1622,11 @@ wss.on('connection', (ws, req) => {
               type: 'response.create',
               response: { instructions: `Dis exactement et uniquement cette phrase, mot pour mot, sans rien ajouter : "${getRecordingMention(cfg?.voix)}"` }
             }));
+          } else if (!QUESTION_OUVERTURE_INSTR) {
+            // v9.1 : vertical Contrôle — pas de question forcée, on lève le mode sourd à la fin de lecture
+            accueilStage = 3;
+            console.log('[OAI] Annonces terminées → pas de question d\'ouverture (Contrôle) → attente fin de lecture');
+            envoyerMarkAnnonces();
           } else {
             // Mention OK (ou bornes atteintes) → question d'ouverture
             accueilStage = 2;
@@ -1310,25 +1648,7 @@ wss.on('connection', (ws, req) => {
             }));
           } else {
             accueilStage = 3;
-            // 🛡️ v67.9 : le modèle génère plus vite que le temps réel — la GENERATION des annonces
-            // est finie mais la LECTURE chez l'appelant continue. On ne lève le mode sourd que
-            // quand Twilio confirme avoir JOUÉ toutes les annonces (événement mark).
-            if (ws.readyState === 1 && streamSid) {
-              ws.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'annoncesFinies' } }));
-              pushEvt(callSid, '📍 génération OK — mark envoyé à Twilio, attente de fin de LECTURE');
-              console.log('[GARDE-ACCUEIL] 📍 Annonces générées — mark envoyé, le sourd se lèvera à la fin de LECTURE chez l\'appelant');
-              markTimer = setTimeout(() => {
-                if (accueilLock) {
-                  accueilLock = false;
-                  pushEvt(callSid, '⏱️ Failsafe mark 12s → lock levé (mark Twilio non reçu)');
-                  console.log('[GARDE-ACCUEIL] ⏱️ Failsafe mark 12s → mode sourd levé');
-                }
-              }, 12000);
-            } else {
-              accueilLock = false;
-              pushEvt(callSid, '🔓 LOCK LEVÉ sans stream Twilio (cas dégénéré)');
-              console.log('[GARDE-ACCUEIL] ✅ Pas de stream Twilio → mode sourd levé directement');
-            }
+            envoyerMarkAnnonces();
           }
         }
       }
