@@ -313,6 +313,7 @@ wss.on('connection', (ws, req) => {
   let accueilLock = true;      // 🤫 mode sourd pendant l'accueil
   let accueilStage = 0;        // 0=accueil, 2=question, 3=terminé
   let accueilRetried = false;  // accueil muet → renvoi 1x max
+  let firstRealTurnHandled = false; // v9.1 : 1er vrai tour de l'appelant
   let questionRetried = false; // question muette → renvoi 1x max
   let markTimer = null;        // failsafe 12s si le mark Twilio ne revient pas
   let deafLogged = false;
@@ -478,7 +479,7 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      if (m.type === 'response.audio_transcript.delta' && m.delta) curAss += m.delta;
+      if (m.type === 'response.output_audio_transcript.delta' && m.delta) curAss += m.delta;
 
       async function handleSofiaTranscript(text) {
         if (!text?.trim()) return;
@@ -500,7 +501,7 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      if (m.type === 'response.audio_transcript.done' && curAss) {
+      if (m.type === 'response.output_audio_transcript.done' && curAss) {
         await handleSofiaTranscript(curAss);
         curAss = '';
       }
@@ -581,6 +582,20 @@ wss.on('connection', (ws, req) => {
       if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) {
         transcript.push({ r: 'u', t: m.transcript });
         console.log(`[USER] "${m.transcript.slice(0, 100)}"`);
+
+        // v9.1 : 1ère vraie réponse de l'appelant → on réactive l'auto-réponse VAD
+        // (create_response:false au départ servait uniquement à éviter qu'un silence pendant
+        // l'accueil ne fasse répéter la question par le modèle). Sans ça, le bot écoute mais
+        // ne répond jamais — bug "mode muet après l'accueil" constaté le 02/10/2026.
+        if (!firstRealTurnHandled) {
+          firstRealTurnHandled = true;
+          if (oai && oai.readyState === WebSocket.OPEN) {
+            oai.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: { type: 'server_vad', threshold: 0.70, prefix_padding_ms: 300, silence_duration_ms: 500, create_response: true } } } } }));
+            oai.send(JSON.stringify({ type: 'response.create' }));
+            pushEvt(callSid, '🔓 1er vrai tour appelant → create_response réactivé');
+            console.log('[OAI] 🔓 1er vrai tour appelant → create_response réactivé');
+          }
+        }
         // PMS Query automatique si demande de réservation / disponibilité détectée
         if (cfg?._pms) {
           const t = m.transcript.toLowerCase();
