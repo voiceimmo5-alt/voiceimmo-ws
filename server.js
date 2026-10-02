@@ -1145,7 +1145,7 @@ wss.on('connection', (ws, req) => {
 
       // ElevenLabs TTS : intercepter le transcript et générer l'audio via ElevenLabs
       if (false /* ElevenLabs désactivé */ &&
-          m.type === 'response.audio_transcript.done' && m.transcript && streamSid) {
+          m.type === 'response.output_audio_transcript.done' && m.transcript && streamSid) {
         const txt = m.transcript.trim();
         if (txt) {
           sendElevenLabsAudio(ws, streamSid, txt, ELEVENLABS_VOICE_ID).catch(e =>
@@ -1180,8 +1180,8 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      // Source 1 : response.audio_transcript.done (event standard)
-      if (m.type === 'response.audio_transcript.done' && curAss) {
+      // Source 1 : response.output_audio_transcript.done (event standard)
+      if (m.type === 'response.output_audio_transcript.done' && curAss) {
         await handleSophieTranscript(curAss);
         curAss = '';
       }
